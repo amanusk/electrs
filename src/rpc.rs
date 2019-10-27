@@ -1,5 +1,6 @@
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::consensus::encode::{deserialize, serialize};
+use bitcoin_hashes::Hash;
 use bitcoin_hashes::hex::{FromHex, ToHex};
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use error_chain::ChainedError;
@@ -13,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::errors::*;
+use crate::index::compute_script_hash;
 use crate::metrics::{Gauge, HistogramOpts, HistogramVec, MetricOpts, Metrics};
 use crate::query::{Query, Status};
 use crate::util::{spawn_thread, Channel, HeaderEntry, SyncChannel};
@@ -342,6 +344,7 @@ impl Connection {
         if let Some(ref mut last_entry) = self.last_header_entry {
             let entry = self.query.get_best_header()?;
             if *last_entry != entry {
+                let is_child_block = entry.header().prev_blockhash.eq(last_entry.hash());
                 *last_entry = entry;
                 let hex_header = hex::encode(serialize(last_entry.header()));
                 let header = json!({"hex": hex_header, "height": last_entry.height()});
@@ -349,9 +352,69 @@ impl Connection {
                     "jsonrpc": "2.0",
                     "method": "blockchain.headers.subscribe",
                     "params": [header]}));
+
+                // TODO: this can be done straight in app.rs - update
+                // if this previous_tip + 1 (w.r.t its hash):
+                if is_child_block {
+                    // CALCULATE NEW STATUS HASHES
+                    // get block transactions
+                    let block = self.query.get_block(entry.hash())
+                        .expect(&format!("failed to get block {}", entry.hash()));
+                    // for each tx in block:
+                    let mut relevant_script_hashes = vec![]; // subscribed script hashes which are affected
+                    for tx in block.txdata {
+                        // for each script_hash in tx.inputs
+                        for input in tx.input {
+                            // find output, get the relevant script hash in it
+                            let previous_output_tx =
+                                self.query.get_transaction_obj(&input.previous_output.txid)
+                                    .expect(&format!("failed to get transaction {}", &input.previous_output.txid));
+                            let previous_output = previous_output_tx.output.get(input.previous_output.vout)
+                                .expect(&format!("failed to get previous_output {}:{}",
+                                                 &input.previous_output.txid, &input.previous_output.vout));
+                            let script_hash =
+                                Sha256dHash::from_slice(&compute_script_hash(&previous_output.script_pubkey[..]))
+                                    .expect("failed computing script hash for output.script_pubkey");
+                            // if script_hash in self.script_hashes, add to the relevant script hashes list
+                            if self.status_hashes.contains_key(&script_hash) {
+                                relevant_script_hashes.push(script_hash);
+                            }
+                        }
+
+                        for (i, output) in tx.output.iter().enumerate() {
+                            let script_hash =
+                                Sha256dHash::from_slice(&compute_script_hash(&output.script_pubkey[..]))
+                                    .expect(&format!("failed computing script hash for output {}:{}", tx.txid(), i));
+                            // if script_hash in self.script_hashes:
+                            if self.status_hashes.contains_key(&script_hash) {
+                                relevant_script_hashes.push(script_hash);
+                            }
+                        }
+                    }
+
+                    result.append(self.update_script_hash_subscriptions(relevant_script_hashes));
+
+                } else {
+                    // Re-org: just fetch all
+                    // (Note: ideally take the common ancestor and scan blocks from there, but that requires additional storage and is
+                    // probably an overkill for a re-org in Bitcoin which occurs only once in few months)
+                    debug!("update_subscriptions: detected re-org");
+                    result.append(self.update_script_hash_subscriptions(self.status_hashes.keys()));
+                }
             }
         }
-        for (script_hash, status_hash) in self.status_hashes.iter_mut() {
+
+        timer.observe_duration();
+        self.stats
+            .subscriptions
+            .set(self.status_hashes.len() as i64);
+        Ok(result)
+    }
+
+    fn update_script_hash_subscriptions(&mut self, script_hashes: Vec<dyn Hash>) -> Vec<Value> {
+        let mut result = vec![];
+        for script_hash in script_hashes {
+            let status_hash = self.status_hashes.get_mut(&script_hash).unwrap();
             let status = self.query.status(&script_hash[..])?;
             let new_status_hash = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
             if new_status_hash == *status_hash {
@@ -363,11 +426,7 @@ impl Connection {
                 "params": [script_hash.to_hex(), new_status_hash]}));
             *status_hash = new_status_hash;
         }
-        timer.observe_duration();
-        self.stats
-            .subscriptions
-            .set(self.status_hashes.len() as i64);
-        Ok(result)
+        result
     }
 
     fn send_values(&mut self, values: &[Value]) -> Result<()> {

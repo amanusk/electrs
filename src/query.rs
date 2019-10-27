@@ -1,4 +1,5 @@
 use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::Block;
 use bitcoin::consensus::encode::deserialize;
 use bitcoin_hashes::hex::ToHex;
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
@@ -343,6 +344,10 @@ impl Query {
         Ok(Status { confirmed, mempool })
     }
 
+    pub fn get_block(&self, blockhash: &Sha256dHash) -> Result<Block> {
+        self.app.daemon().getblock(blockhash)
+    }
+
     fn lookup_confirmed_blockhash(
         &self,
         tx_hash: &Sha256dHash,
@@ -394,6 +399,17 @@ impl Query {
         self.app
             .daemon()
             .gettransaction_raw(tx_hash, blockhash, verbose)
+    }
+
+    pub fn get_transaction_obj(&self, tx_hash: &Sha256dHash) -> Result<Transaction> {
+        let _timer = self
+            .duration
+            .with_label_values(&["get_transaction_obj"])
+            .start_timer();
+        let blockhash = self.lookup_confirmed_blockhash(tx_hash, /*block_height*/ None)?;
+        self.app
+            .daemon()
+            .gettransaction(tx_hash, blockhash)
     }
 
     pub fn get_headers(&self, heights: &[usize]) -> Vec<HeaderEntry> {
