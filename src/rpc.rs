@@ -233,14 +233,14 @@ impl Connection {
         Ok(unspent_from_status(&self.query.status(&script_hash[..])?))
     }
 
-    fn blockchain_transaction_broadcast(&self, params: &[Value]) -> Result<Value> {
+    fn blockchain_transaction_broadcast(&mut self, params: &[Value]) -> Result<Value> {
         let tx = params.get(0).chain_err(|| "missing tx")?;
         let tx = tx.as_str().chain_err(|| "non-string tx")?;
         let tx = hex::decode(&tx).chain_err(|| "non-hex tx")?;
         let tx: Transaction = deserialize(&tx).chain_err(|| "failed to parse tx")?;
         let txid = self.query.broadcast(&tx)?;
-        self.query.update_mempool()?;
-        if let Err(e) = self.chan.sender().try_send(Message::PeriodicUpdate) {
+        let script_hashes = self.query.update_mempool()?;
+        if let Err(e) = self.update_subscriptions_mempool(script_hashes) {
             warn!("failed to issue PeriodicUpdate after broadcast: {}", e);
         }
         Ok(json!(txid.to_hex()))
@@ -344,8 +344,9 @@ impl Connection {
         if let Some(ref mut last_entry) = self.last_header_entry {
             let entry = self.query.get_best_header()?;
             if *last_entry != entry {
+                debug!("update_subscriptions: detected new block {}", entry.hash());
                 let is_child_block = entry.header().prev_blockhash.eq(last_entry.hash());
-                *last_entry = entry;
+                *last_entry = entry.clone();
                 let hex_header = hex::encode(serialize(last_entry.header()));
                 let header = json!({"hex": hex_header, "height": last_entry.height()});
                 result.push(json!({
@@ -356,6 +357,7 @@ impl Connection {
                 // TODO: this can be done straight in app.rs - update
                 // if this previous_tip + 1 (w.r.t its hash):
                 if is_child_block {
+                    debug!("update_subscriptions: detected child block (points to latest)");
                     // CALCULATE NEW STATUS HASHES
                     // get block transactions
                     let block = self.query.get_block(entry.hash())
@@ -364,12 +366,12 @@ impl Connection {
                     let mut relevant_script_hashes = vec![]; // subscribed script hashes which are affected
                     for tx in block.txdata {
                         // for each script_hash in tx.inputs
-                        for input in tx.input {
+                        for input in tx.input.iter() {
                             // find output, get the relevant script hash in it
                             let previous_output_tx =
                                 self.query.get_transaction_obj(&input.previous_output.txid)
                                     .expect(&format!("failed to get transaction {}", &input.previous_output.txid));
-                            let previous_output = previous_output_tx.output.get(input.previous_output.vout)
+                            let previous_output = previous_output_tx.output.get(input.previous_output.vout as usize)
                                 .expect(&format!("failed to get previous_output {}:{}",
                                                  &input.previous_output.txid, &input.previous_output.vout));
                             let script_hash =
@@ -392,14 +394,17 @@ impl Connection {
                         }
                     }
 
-                    result.append(self.update_script_hash_subscriptions(relevant_script_hashes));
+                    result.extend(self.update_script_hash_subscriptions(relevant_script_hashes)
+                        .expect("failed during script hash subscriptions update"));
 
                 } else {
                     // Re-org: just fetch all
                     // (Note: ideally take the common ancestor and scan blocks from there, but that requires additional storage and is
                     // probably an overkill for a re-org in Bitcoin which occurs only once in few months)
                     debug!("update_subscriptions: detected re-org");
-                    result.append(self.update_script_hash_subscriptions(self.status_hashes.keys()));
+                    let subscribed_status_hashes = self.status_hashes.keys().map(|v| v.clone()).collect::<Vec<Sha256dHash>>();
+                    result.extend(self.update_script_hash_subscriptions(subscribed_status_hashes)
+                        .expect("failed during script hash subscriptions update"));
                 }
             }
         }
@@ -411,10 +416,28 @@ impl Connection {
         Ok(result)
     }
 
-    fn update_script_hash_subscriptions(&mut self, script_hashes: Vec<dyn Hash>) -> Vec<Value> {
+    fn update_subscriptions_mempool(&mut self, script_hashes: Vec<Sha256dHash>) -> Result<Vec<Value>> {
+        let timer = self
+            .stats
+            .latency
+            .with_label_values(&["update_script_hash_subscriptions"])
+            .start_timer();
+        let res = self.update_script_hash_subscriptions(script_hashes);
+        timer.observe_duration();
+        self.stats
+            .subscriptions
+            .set(self.status_hashes.len() as i64);
+        res
+    }
+
+    fn update_script_hash_subscriptions(&mut self, script_hashes: Vec<Sha256dHash>) -> Result<Vec<Value>> {
         let mut result = vec![];
         for script_hash in script_hashes {
-            let status_hash = self.status_hashes.get_mut(&script_hash).unwrap();
+            let status_hash_option = self.status_hashes.get_mut(&script_hash);
+            if status_hash_option.is_none() {
+                continue;
+            }
+            let status_hash = status_hash_option.unwrap();
             let status = self.query.status(&script_hash[..])?;
             let new_status_hash = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
             if new_status_hash == *status_hash {
@@ -426,7 +449,8 @@ impl Connection {
                 "params": [script_hash.to_hex(), new_status_hash]}));
             *status_hash = new_status_hash;
         }
-        result
+
+        Ok(result)
     }
 
     fn send_values(&mut self, values: &[Value]) -> Result<()> {
@@ -460,6 +484,12 @@ impl Connection {
                         _ => bail!("invalid command: {}", cmd),
                     };
                     self.send_values(&[reply])?
+                }
+                Message::MempoolUpdate(script_hashes) => {
+                    let values = self
+                        .update_subscriptions_mempool(script_hashes)
+                        .chain_err(|| "failed to update subscriptions")?;
+                    self.send_values(&values)?
                 }
                 Message::PeriodicUpdate => {
                     let values = self
@@ -522,11 +552,13 @@ impl Connection {
 #[derive(Debug)]
 pub enum Message {
     Request(String),
+    MempoolUpdate(Vec<Sha256dHash>),
     PeriodicUpdate,
     Done,
 }
 
 pub enum Notification {
+    MempoolUpdate(Vec<Sha256dHash>),
     Periodic,
     Exit,
 }
@@ -551,6 +583,16 @@ impl RPC {
             for msg in notification.receiver().iter() {
                 let mut senders = senders.lock().unwrap();
                 match msg {
+                    Notification::MempoolUpdate(script_hashes) => {
+                        for sender in senders.split_off(0) {
+                            if let Err(TrySendError::Disconnected(_)) =
+                            sender.try_send(Message::MempoolUpdate(script_hashes.clone()))
+                            {
+                                continue;
+                            }
+                            senders.push(sender);
+                        }
+                    },
                     Notification::Periodic => {
                         for sender in senders.split_off(0) {
                             if let Err(TrySendError::Disconnected(_)) =
@@ -634,6 +676,10 @@ impl RPC {
 
     pub fn notify(&self) {
         self.notification.send(Notification::Periodic).unwrap();
+    }
+
+    pub fn notify_mempool_change(&self, script_hashes: Vec<Sha256dHash>) {
+        self.notification.send(Notification::MempoolUpdate(script_hashes)).unwrap();
     }
 }
 

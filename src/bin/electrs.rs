@@ -61,13 +61,15 @@ fn run_server(config: &Config) -> Result<()> {
     let tx_cache = TransactionCache::new(config.tx_cache_size, &metrics);
     let query = Query::new(app.clone(), &metrics, tx_cache, config.txid_limit);
 
-    let mut server = None; // Electrum RPC server
+    let mut server_opt = None; // Electrum RPC server
     loop {
         app.update(&signal)?;
-        query.update_mempool()?;
-        server
-            .get_or_insert_with(|| RPC::start(config.electrum_rpc_addr, query.clone(), &metrics))
-            .notify(); // update subscribed clients
+        let script_hashes = query.update_mempool()?;
+        // TODO: unite notify calls into one
+        let server = server_opt
+            .get_or_insert_with(|| RPC::start(config.electrum_rpc_addr, query.clone(), &metrics)); // update subscribed clients
+        server.notify();
+        server.notify_mempool_change(script_hashes);
         if let Err(err) = signal.wait(Duration::from_secs(5)) {
             info!("stopping server: {}", err);
             break;

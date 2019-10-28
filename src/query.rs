@@ -505,7 +505,7 @@ impl Query {
         self.app.daemon().broadcast(txn)
     }
 
-    pub fn update_mempool(&self) -> Result<()> {
+    pub fn update_mempool(&self) -> Result<Vec<Sha256dHash>> {
         let _timer = self
             .duration
             .with_label_values(&["update_mempool"])

@@ -8,12 +8,13 @@ use std::sync::Mutex;
 
 use crate::daemon::{Daemon, MempoolEntry};
 use crate::errors::*;
-use crate::index::index_transaction;
+use crate::index::{index_transaction, compute_script_hash};
 use crate::metrics::{
     Gauge, GaugeVec, HistogramOpts, HistogramTimer, HistogramVec, MetricOpts, Metrics,
 };
 use crate::store::{ReadStore, Row};
 use crate::util::Bytes;
+use bitcoin_hashes::Hash;
 
 const VSIZE_BIN_WIDTH: u32 = 100_000; // in vbytes
 
@@ -190,7 +191,7 @@ impl Tracker {
         &self.index
     }
 
-    pub fn update(&mut self, daemon: &Daemon) -> Result<()> {
+    pub fn update(&mut self, daemon: &Daemon) -> Result<Vec<Sha256dHash>> {
         let timer = self.stats.start_timer("fetch");
         let new_txids = daemon
             .getmempooltxids()
@@ -200,6 +201,7 @@ impl Tracker {
 
         let timer = self.stats.start_timer("add");
         let txids_iter = new_txids.difference(&old_txids);
+        let mut txs = Vec::<Transaction>::new();
         let entries: Vec<(&Sha256dHash, MempoolEntry)> = txids_iter
             .filter_map(|txid| {
                 match daemon.getmempoolentry(txid) {
@@ -213,16 +215,16 @@ impl Tracker {
             .collect();
         if !entries.is_empty() {
             let txids: Vec<&Sha256dHash> = entries.iter().map(|(txid, _)| *txid).collect();
-            let txs = match daemon.gettransactions(&txids) {
+            txs = match daemon.gettransactions(&txids) {
                 Ok(txs) => txs,
                 Err(err) => {
                     warn!("failed to get transactions {:?}: {}", txids, err); // e.g. new block or RBF
-                    return Ok(()); // keep the mempool until next update()
+                    return Ok(Vec::<Sha256dHash>::new()); // keep the mempool until next update()
                 }
             };
-            for ((txid, entry), tx) in entries.into_iter().zip(txs.into_iter()) {
+            for ((txid, entry), tx) in entries.into_iter().zip(txs.iter()) {
                 assert_eq!(tx.txid(), *txid);
-                self.add(txid, tx, entry);
+                self.add(txid, tx.clone(), entry);
             }
         }
         timer.observe_duration();
@@ -238,7 +240,12 @@ impl Tracker {
         timer.observe_duration();
 
         self.stats.count.set(self.items.len() as i64);
-        Ok(())
+
+        let timer = self.stats.start_timer("notify");
+        let script_hashes = get_script_hashes(daemon, txs.into_iter());
+        timer.observe_duration();
+
+        script_hashes
     }
 
     fn add(&mut self, txid: &Sha256dHash, tx: Transaction, entry: MempoolEntry) {
@@ -281,4 +288,36 @@ fn electrum_fees(entries: &[&MempoolEntry]) -> Vec<(f32, u32)> {
         histogram.push((fee_rate, bin_size));
     }
     histogram
+}
+
+fn get_script_hashes(daemon: &Daemon, txs: impl Iterator<Item = Transaction>) -> Result<Vec<Sha256dHash>> {
+    let mut script_hashes = Vec::<Sha256dHash>::new();
+    for tx in txs {
+        for input in tx.input.iter() {
+            // find output, get the relevant script hash in it
+            let previous_output_tx =
+                daemon.gettransaction(&input.previous_output.txid, None)
+                    .expect(&format!("failed to get transaction {}", &input.previous_output.txid));
+            let previous_output = previous_output_tx.output.get(input.previous_output.vout as usize)
+                .expect(&format!("failed to get previous_output {}:{}",
+                                 &input.previous_output.txid, &input.previous_output.vout));
+            let script_hash =
+                Sha256dHash::from_slice(&compute_script_hash(&previous_output.script_pubkey[..]))
+                    .expect(&format!("failed computing script hash of previous_output {}:{}",
+                                     &input.previous_output.txid, &input.previous_output.vout));
+            script_hashes.push(script_hash)
+        }
+
+        for (i, output) in tx.output.iter().enumerate() {
+            let script_hash =
+                Sha256dHash::from_slice(&compute_script_hash(&output.script_pubkey[..]))
+                    .expect(&format!("failed computing script hash for output {}:{}", tx.txid(), i));
+            script_hashes.push(script_hash);
+        }
+
+        script_hashes.sort_unstable();
+        script_hashes.dedup();
+    }
+
+    Ok(script_hashes)
 }
