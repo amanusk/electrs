@@ -242,7 +242,7 @@ impl Tracker {
         self.stats.count.set(self.items.len() as i64);
 
         let timer = self.stats.start_timer("notify");
-        let script_hashes = get_script_hashes(daemon, txs.into_iter());
+        let script_hashes = self.get_script_hashes(daemon, txs.into_iter());
         timer.observe_duration();
 
         script_hashes
@@ -269,6 +269,43 @@ impl Tracker {
         self.histogram = electrum_fees(&entries);
         self.stats.update(&entries);
     }
+
+    fn get_script_hashes(&mut self, daemon: &Daemon, txs: impl Iterator<Item = Transaction>) -> Result<Vec<Sha256dHash>> {
+        debug!("get_script_hashes");
+        let mut script_hashes = Vec::<Sha256dHash>::new();
+        for tx in txs {
+            for input in tx.input.iter() {
+                // find output, get the relevant script hash in it
+                let previous_output = daemon.get_confirmed_utxo(&input.previous_output.txid, input.previous_output.vout)
+                    .or_else(|_e| {
+                        // possibly failed because previous output's transaction itself is unconfirmed, so search in mempool.
+                        debug!("failed to find a confirmed previous output {}:{}", &input.previous_output.txid, &input.previous_output.vout);
+                        self.items
+                            .get(&input.previous_output.txid)
+                            .map(|item| item.tx.output.get(input.previous_output.vout as usize).unwrap().clone())
+                            .ok_or("")
+                    })
+                    .expect(&format!("failed to get previous output {}:{}", &input.previous_output.txid, &input.previous_output.vout));
+                let script_hash =
+                    Sha256dHash::from_slice(&compute_script_hash(&previous_output.script_pubkey[..]))
+                        .expect(&format!("failed computing script hash of previous output {}:{}",
+                                         &input.previous_output.txid, &input.previous_output.vout));
+                script_hashes.push(script_hash)
+            }
+
+            for (i, output) in tx.output.iter().enumerate() {
+                let script_hash =
+                    Sha256dHash::from_slice(&compute_script_hash(&output.script_pubkey[..]))
+                        .expect(&format!("failed computing script hash for output {}:{}", tx.txid(), i));
+                script_hashes.push(script_hash);
+            }
+
+            script_hashes.sort_unstable();
+            script_hashes.dedup();
+        }
+
+        Ok(script_hashes)
+    }
 }
 
 fn electrum_fees(entries: &[&MempoolEntry]) -> Vec<(f32, u32)> {
@@ -288,36 +325,4 @@ fn electrum_fees(entries: &[&MempoolEntry]) -> Vec<(f32, u32)> {
         histogram.push((fee_rate, bin_size));
     }
     histogram
-}
-
-fn get_script_hashes(daemon: &Daemon, txs: impl Iterator<Item = Transaction>) -> Result<Vec<Sha256dHash>> {
-    let mut script_hashes = Vec::<Sha256dHash>::new();
-    for tx in txs {
-        for input in tx.input.iter() {
-            // find output, get the relevant script hash in it
-            let previous_output_tx =
-                daemon.gettransaction(&input.previous_output.txid, None)
-                    .expect(&format!("failed to get transaction {}", &input.previous_output.txid));
-            let previous_output = previous_output_tx.output.get(input.previous_output.vout as usize)
-                .expect(&format!("failed to get previous_output {}:{}",
-                                 &input.previous_output.txid, &input.previous_output.vout));
-            let script_hash =
-                Sha256dHash::from_slice(&compute_script_hash(&previous_output.script_pubkey[..]))
-                    .expect(&format!("failed computing script hash of previous_output {}:{}",
-                                     &input.previous_output.txid, &input.previous_output.vout));
-            script_hashes.push(script_hash)
-        }
-
-        for (i, output) in tx.output.iter().enumerate() {
-            let script_hash =
-                Sha256dHash::from_slice(&compute_script_hash(&output.script_pubkey[..]))
-                    .expect(&format!("failed computing script hash for output {}:{}", tx.txid(), i));
-            script_hashes.push(script_hash);
-        }
-
-        script_hashes.sort_unstable();
-        script_hashes.dedup();
-    }
-
-    Ok(script_hashes)
 }

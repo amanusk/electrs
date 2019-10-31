@@ -407,6 +407,10 @@ impl Query {
             .with_label_values(&["get_transaction_obj"])
             .start_timer();
         let blockhash = self.lookup_confirmed_blockhash(tx_hash, /*block_height*/ None)?;
+        debug!("get_transaction_obj: blockhash.is_some() = {}", blockhash.is_some());
+        if blockhash.is_some() {
+            debug!("get_transaction_obj: blockhash = {}", blockhash.unwrap());
+        }
         self.app
             .daemon()
             .gettransaction(tx_hash, blockhash)

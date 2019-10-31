@@ -341,6 +341,7 @@ impl Connection {
             .with_label_values(&["periodic_update"])
             .start_timer();
         let mut result = vec![];
+        debug!("update_subscriptions: checking for a new block");
         if let Some(ref mut last_entry) = self.last_header_entry {
             let entry = self.query.get_best_header()?;
             if *last_entry != entry {
@@ -365,15 +366,16 @@ impl Connection {
                     // for each tx in block:
                     let mut relevant_script_hashes = vec![]; // subscribed script hashes which are affected
                     for tx in block.txdata {
+                        if tx.is_coin_base() {
+                            continue;
+                        }
+
                         // for each script_hash in tx.inputs
                         for input in tx.input.iter() {
                             // find output, get the relevant script hash in it
-                            let previous_output_tx =
-                                self.query.get_transaction_obj(&input.previous_output.txid)
-                                    .expect(&format!("failed to get transaction {}", &input.previous_output.txid));
+                            let previous_output_tx = self.query.get_transaction_obj(&input.previous_output.txid)?;
                             let previous_output = previous_output_tx.output.get(input.previous_output.vout as usize)
-                                .expect(&format!("failed to get previous_output {}:{}",
-                                                 &input.previous_output.txid, &input.previous_output.vout));
+                                .chain_err(|| format!("failed finding previous output {}:{}", input.previous_output.txid, input.previous_output.vout))?;
                             let script_hash =
                                 Sha256dHash::from_slice(&compute_script_hash(&previous_output.script_pubkey[..]))
                                     .expect("failed computing script hash for output.script_pubkey");
@@ -394,6 +396,8 @@ impl Connection {
                         }
                     }
 
+                    relevant_script_hashes.sort_unstable();
+                    relevant_script_hashes.dedup();
                     result.extend(self.update_script_hash_subscriptions(relevant_script_hashes)
                         .expect("failed during script hash subscriptions update"));
 
@@ -437,6 +441,7 @@ impl Connection {
             if status_hash_option.is_none() {
                 continue;
             }
+
             let status_hash = status_hash_option.unwrap();
             let status = self.query.status(&script_hash[..])?;
             let new_status_hash = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
