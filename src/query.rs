@@ -535,39 +535,9 @@ impl Query {
                     continue;
                 }
 
-                for input in tx.input.iter() {
-                    let previous_output_tx =
-                        tx_from_value(self.get_transaction(&input.previous_output.txid, false)?)?;
-
-                    let previous_output = previous_output_tx
-                        .output
-                        .get(input.previous_output.vout as usize)
-                        .chain_err(|| {
-                            format!(
-                                "failed finding previous output {}:{}",
-                                input.previous_output.txid, input.previous_output.vout
-                            )
-                        })?;
-
-                    let script_hash = Sha256dHash::from_slice(&compute_script_hash(
-                        &previous_output.script_pubkey[..],
-                    ))
-                    .expect("failed computing script hash for output.script_pubkey");
-
-                    script_hashes.insert(script_hash);
-                }
-
-                for (i, output) in tx.output.iter().enumerate() {
-                    let script_hash =
-                        Sha256dHash::from_slice(&compute_script_hash(&output.script_pubkey[..]))
-                            .expect(&format!(
-                                "failed computing script hash for output {}:{}",
-                                tx.txid(),
-                                i
-                            ));
-
-                    script_hashes.insert(script_hash);
-                }
+                let tx_script_hashes = self.get_script_hashes_in_tx(tx)
+                    .expect(&format!("failed to get script hashes in tx {}", tx.txid()));
+                script_hashes.extend(tx_script_hashes);
             }
         }
 
@@ -580,72 +550,55 @@ impl Query {
         txs: Vec<Transaction>,
     ) -> Result<HashSet<Sha256dHash>> {
         debug!("get_script_hashes_in_mempool_txs: txs.len() = {}", txs.len());
-        let mut script_hashes = HashSet::<Sha256dHash>::new();
+        let mut script_hashes: HashSet<Sha256dHash> = HashSet::<Sha256dHash>::new();
         for tx in txs {
-            for input in tx.input.iter() {
-                let previous_output = self
-                    .app
-                    .daemon()
-                    .get_confirmed_utxo(&input.previous_output.txid, input.previous_output.vout)
-                    .or_else(|_e| {
-                        // possibly failed because previous output's transaction itself is unconfirmed, so search in mempool.
-                        debug!(
-                            "failed to find a confirmed previous output {}:{}",
-                            &input.previous_output.txid, &input.previous_output.vout
-                        );
-                        let previous_output_tx = self
-                            .tracker
-                            .read()
-                            .unwrap()
-                            .get_txn(&input.previous_output.txid)
-                            .chain_err(|| {
-                                format!(
-                                    "failed to find unconfirmed previous output tx {}:{}",
-                                    &input.previous_output.txid, &input.previous_output.vout
-                                )
-                            })?;
-
-                        previous_output_tx
-                            .output
-                            .get(input.previous_output.vout as usize)
-                            .map(|output| output.clone())
-                            .chain_err(|| {
-                                format!(
-                                    "failed to find previous output index in tx {}:{}",
-                                    &input.previous_output.txid, &input.previous_output.vout
-                                )
-                            })
-                    })
-                    .expect(&format!(
-                        "failed to get previous output {}:{}",
-                        &input.previous_output.txid, &input.previous_output.vout
-                    ));
-
-                let script_hash = Sha256dHash::from_slice(&compute_script_hash(
-                    &previous_output.script_pubkey[..],
-                ))
-                .expect(&format!(
-                    "failed computing script hash of previous output {}:{}",
-                    &input.previous_output.txid, &input.previous_output.vout
-                ));
-
-                script_hashes.insert(script_hash);
-            }
-
-            for (i, output) in tx.output.iter().enumerate() {
-                let script_hash =
-                    Sha256dHash::from_slice(&compute_script_hash(&output.script_pubkey[..]))
-                        .expect(&format!(
-                            "failed computing script hash for output {}:{}",
-                            tx.txid(),
-                            i
-                        ));
-
-                script_hashes.insert(script_hash);
-            }
+            let tx_script_hashes = self.get_script_hashes_in_tx(tx)
+                .expect(&format!("failed to get script hashes in tx {}", tx.txid()));
+            script_hashes.extend(tx_script_hashes);
         }
 
         debug!("get_script_hashes_in_mempool_txs: script_hashes.len() = {}", script_hashes.len());
+        Ok(script_hashes)
+    }
+
+    fn get_script_hashes_in_tx(
+        &self,
+        tx: Transaction,
+    ) -> Result<HashSet<Sha256dHash>> {
+        let script_hashes = HashSet::<Sha256dHash>::new();
+        for input in tx.input.iter() {
+            let previous_output_tx =
+                tx_from_value(self.get_transaction(&input.previous_output.txid, false)?)?;
+
+            let previous_output = previous_output_tx
+                .output
+                .get(input.previous_output.vout as usize)
+                .chain_err(|| {
+                    format!(
+                        "failed finding previous output {}:{}",
+                        input.previous_output.txid, input.previous_output.vout
+                    )
+                })?;
+
+            let script_hash = Sha256dHash::from_slice(&compute_script_hash(
+                &previous_output.script_pubkey[..],
+            )).expect("failed computing script hash for output.script_pubkey");
+
+            script_hashes.insert(script_hash);
+        }
+
+        for (i, output) in tx.output.iter().enumerate() {
+            let script_hash =
+                Sha256dHash::from_slice(&compute_script_hash(&output.script_pubkey[..]))
+                    .expect(&format!(
+                        "failed computing script hash for output {}:{}",
+                        tx.txid(),
+                        i
+                    ));
+
+            script_hashes.insert(script_hash);
+        }
+
         Ok(script_hashes)
     }
 }
