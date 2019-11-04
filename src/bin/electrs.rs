@@ -63,6 +63,7 @@ fn run_server(config: &Config) -> Result<()> {
 
     let mut server = None; // Electrum RPC server
     loop {
+        debug!("------ update ------");
         let new_block_headers = app.update(&signal)?;
         let new_mempool_txs = query.update_mempool()?;
         let mut script_hashes = query.get_script_hashes_in_blocks(new_block_headers)?;

@@ -526,6 +526,7 @@ impl Query {
         &self,
         block_hashes: Vec<Sha256dHash>,
     ) -> Result<HashSet<Sha256dHash>> {
+        debug!("get_script_hashes_in_blocks: block_hashes.len() = {}", block_hashes.len());
         let mut script_hashes = HashSet::<Sha256dHash>::new();
         let blocks = self.app.daemon().getblocks(block_hashes.as_ref())?;
         for block in blocks {
@@ -570,6 +571,7 @@ impl Query {
             }
         }
 
+        debug!("get_script_hashes_in_blocks: script_hashes.len() = {}", script_hashes.len());
         Ok(script_hashes)
     }
 
@@ -577,6 +579,7 @@ impl Query {
         &self,
         txs: Vec<Transaction>,
     ) -> Result<HashSet<Sha256dHash>> {
+        debug!("get_script_hashes_in_mempool_txs: txs.len() = {}", txs.len());
         let mut script_hashes = HashSet::<Sha256dHash>::new();
         for tx in txs {
             for input in tx.input.iter() {
@@ -642,6 +645,7 @@ impl Query {
             }
         }
 
+        debug!("get_script_hashes_in_mempool_txs: script_hashes.len() = {}", script_hashes.len());
         Ok(script_hashes)
     }
 }
