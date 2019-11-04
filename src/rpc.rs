@@ -341,7 +341,10 @@ impl Connection {
         &mut self,
         new_txs_script_hashes: HashSet<Sha256dHash>,
     ) -> Result<Vec<Value>> {
-        debug!("update_subscriptions: new_txs_script_hashes.len() = {}", new_txs_script_hashes.len());
+        debug!(
+            "update_subscriptions: new_txs_script_hashes.len() = {}",
+            new_txs_script_hashes.len()
+        );
         let timer = self
             .stats
             .latency
@@ -367,7 +370,10 @@ impl Connection {
             .map(|s| *s)
             .collect();
 
-        debug!("update_subscriptions: found {} subscribed script hashes changed", subscribed_script_hashes_in_new_txs.len());
+        debug!(
+            "update_subscriptions: found {} subscribed script hashes changed",
+            subscribed_script_hashes_in_new_txs.len()
+        );
         for script_hash in subscribed_script_hashes_in_new_txs.iter() {
             debug!("update_subscriptions: notifying {}", script_hash);
             let status_hash = self.status_hashes.get_mut(script_hash).unwrap();

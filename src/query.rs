@@ -526,7 +526,10 @@ impl Query {
         &self,
         block_hashes: Vec<Sha256dHash>,
     ) -> Result<HashSet<Sha256dHash>> {
-        debug!("get_script_hashes_in_blocks: block_hashes.len() = {}", block_hashes.len());
+        debug!(
+            "get_script_hashes_in_blocks: block_hashes.len() = {}",
+            block_hashes.len()
+        );
         let mut script_hashes = HashSet::<Sha256dHash>::new();
         let blocks = self.app.daemon().getblocks(block_hashes.as_ref())?;
         for block in blocks {
@@ -535,13 +538,17 @@ impl Query {
                     continue;
                 }
 
-                let tx_script_hashes = self.get_script_hashes_in_tx(&tx)
+                let tx_script_hashes = self
+                    .get_script_hashes_in_tx(&tx)
                     .expect(&format!("failed to get script hashes in tx {}", &tx.txid()));
                 script_hashes.extend(tx_script_hashes);
             }
         }
 
-        debug!("get_script_hashes_in_blocks: script_hashes.len() = {}", script_hashes.len());
+        debug!(
+            "get_script_hashes_in_blocks: script_hashes.len() = {}",
+            script_hashes.len()
+        );
         Ok(script_hashes)
     }
 
@@ -549,22 +556,26 @@ impl Query {
         &self,
         txs: Vec<Transaction>,
     ) -> Result<HashSet<Sha256dHash>> {
-        debug!("get_script_hashes_in_mempool_txs: txs.len() = {}", txs.len());
+        debug!(
+            "get_script_hashes_in_mempool_txs: txs.len() = {}",
+            txs.len()
+        );
         let mut script_hashes: HashSet<Sha256dHash> = HashSet::<Sha256dHash>::new();
         for tx in txs {
-            let tx_script_hashes = self.get_script_hashes_in_tx(&tx)
+            let tx_script_hashes = self
+                .get_script_hashes_in_tx(&tx)
                 .expect(&format!("failed to get script hashes in tx {}", &tx.txid()));
             script_hashes.extend(tx_script_hashes);
         }
 
-        debug!("get_script_hashes_in_mempool_txs: script_hashes.len() = {}", script_hashes.len());
+        debug!(
+            "get_script_hashes_in_mempool_txs: script_hashes.len() = {}",
+            script_hashes.len()
+        );
         Ok(script_hashes)
     }
 
-    fn get_script_hashes_in_tx(
-        &self,
-        tx: &Transaction,
-    ) -> Result<HashSet<Sha256dHash>> {
+    fn get_script_hashes_in_tx(&self, tx: &Transaction) -> Result<HashSet<Sha256dHash>> {
         let mut script_hashes = HashSet::<Sha256dHash>::new();
         for input in tx.input.iter() {
             let previous_output_tx =
@@ -580,21 +591,22 @@ impl Query {
                     )
                 })?;
 
-            let script_hash = Sha256dHash::from_slice(&compute_script_hash(
-                &previous_output.script_pubkey[..],
-            )).expect("failed computing script hash for output.script_pubkey");
+            let script_hash =
+                Sha256dHash::from_slice(&compute_script_hash(&previous_output.script_pubkey[..]))
+                    .expect("failed computing script hash for output.script_pubkey");
 
             script_hashes.insert(script_hash);
         }
 
         for (i, output) in tx.output.iter().enumerate() {
-            let script_hash =
-                Sha256dHash::from_slice(&compute_script_hash(&output.script_pubkey[..]))
-                    .expect(&format!(
-                        "failed computing script hash for output {}:{}",
-                        tx.txid(),
-                        i
-                    ));
+            let script_hash = Sha256dHash::from_slice(&compute_script_hash(
+                &output.script_pubkey[..],
+            ))
+            .expect(&format!(
+                "failed computing script hash for output {}:{}",
+                tx.txid(),
+                i
+            ));
 
             script_hashes.insert(script_hash);
         }
