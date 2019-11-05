@@ -50,12 +50,6 @@ fn block_from_value(value: Value) -> Result<Block> {
     Ok(deserialize(&block_bytes).chain_err(|| format!("failed to parse block {}", block_hex))?)
 }
 
-pub fn tx_from_value(value: Value) -> Result<Transaction> {
-    let tx_hex = value.as_str().chain_err(|| "non-string tx")?;
-    let tx_bytes = hex::decode(tx_hex).chain_err(|| "non-hex tx")?;
-    Ok(deserialize(&tx_bytes).chain_err(|| format!("failed to parse tx {}", tx_hex))?)
-}
-
 fn txout_from_value(value: Value) -> Result<TxOut> {
     let txout_obj: &Map<String, Value> = value.as_object().chain_err(|| "non-object txout")?;
 
@@ -83,6 +77,12 @@ fn txout_from_value(value: Value) -> Result<TxOut> {
         value,
         script_pubkey,
     })
+}
+
+fn tx_from_value(value: Value) -> Result<Transaction> {
+    let tx_hex = value.as_str().chain_err(|| "non-string tx")?;
+    let tx_bytes = hex::decode(tx_hex).chain_err(|| "non-hex tx")?;
+    Ok(deserialize(&tx_bytes).chain_err(|| format!("failed to parse tx {}", tx_hex))?)
 }
 
 /// Parse JSONRPC error code, if exists.

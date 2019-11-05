@@ -11,7 +11,6 @@ use std::sync::{Arc, RwLock};
 
 use crate::app::App;
 use crate::cache::TransactionCache;
-use crate::daemon::tx_from_value;
 use crate::errors::*;
 use crate::index::{compute_script_hash, TxInRow, TxOutRow, TxRow};
 use crate::mempool::Tracker;
@@ -217,7 +216,8 @@ impl Query {
         for txid_prefix in prefixes {
             for tx_row in txrows_by_prefix(store, txid_prefix) {
                 let txid: Sha256dHash = deserialize(&tx_row.key.txid).unwrap();
-                let txn = self.load_txn(&txid, Some(tx_row.height))?;
+                let blockhash = self.lookup_confirmed_blockhash(&txid, Some(tx_row.height))?;
+                let txn = self.load_txn(&txid, blockhash)?;
                 txns.push(TxnHeight {
                     txn,
                     height: tx_row.height,
@@ -372,10 +372,9 @@ impl Query {
     }
 
     // Internal API for transaction retrieval
-    fn load_txn(&self, txid: &Sha256dHash, block_height: Option<u32>) -> Result<Transaction> {
+    fn load_txn(&self, txid: &Sha256dHash, blockhash: Option<Sha256dHash>) -> Result<Transaction> {
         let _timer = self.duration.with_label_values(&["load_txn"]).start_timer();
         self.tx_cache.get_or_else(&txid, || {
-            let blockhash = self.lookup_confirmed_blockhash(txid, block_height)?;
             let value: Value = self
                 .app
                 .daemon()
@@ -412,6 +411,10 @@ impl Query {
     pub fn get_best_header(&self) -> Result<HeaderEntry> {
         let last_header = self.app.index().best_header();
         Ok(last_header.chain_err(|| "no headers indexed")?.clone())
+    }
+
+    pub fn get_blocktxids(&self, blockhash: &Sha256dHash) -> Result<Vec<Sha256dHash>> {
+        self.app.daemon().getblocktxids(blockhash)
     }
 
     pub fn get_merkle_proof(
@@ -531,15 +534,15 @@ impl Query {
             block_hashes.len()
         );
         let mut script_hashes = HashSet::<Sha256dHash>::new();
-        let blocks = self.app.daemon().getblocks(block_hashes.as_ref())?;
-        for block in blocks {
-            for tx in block.txdata {
-                if tx.is_coin_base() {
-                    continue;
-                }
-
+        // TODO: don't fetch all blocks here. Just get txids and fetch them from the index - it's faster
+        for blockhash in block_hashes {
+            let txids = self.get_blocktxids(&blockhash)
+                .expect(&format!("failed to load txids of blockhash {}", &blockhash));
+            for txid in txids {
+                let tx = self.load_txn(&txid, Some(blockhash))
+                    .expect(&format!("failed to load tx {} of blockhash {}", &txid, &blockhash));
                 let tx_script_hashes = self
-                    .get_script_hashes_in_tx(&tx)
+                    .get_script_hashes_in_tx(&tx, Some(blockhash))
                     .expect(&format!("failed to get script hashes in tx {}", &tx.txid()));
                 script_hashes.extend(tx_script_hashes);
             }
@@ -560,10 +563,10 @@ impl Query {
             "get_script_hashes_in_mempool_txs: txs.len() = {}",
             txs.len()
         );
-        let mut script_hashes: HashSet<Sha256dHash> = HashSet::<Sha256dHash>::new();
+        let mut script_hashes = HashSet::<Sha256dHash>::new();
         for tx in txs {
             let tx_script_hashes = self
-                .get_script_hashes_in_tx(&tx)
+                .get_script_hashes_in_tx(&tx, None)
                 .expect(&format!("failed to get script hashes in tx {}", &tx.txid()));
             script_hashes.extend(tx_script_hashes);
         }
@@ -575,11 +578,14 @@ impl Query {
         Ok(script_hashes)
     }
 
-    fn get_script_hashes_in_tx(&self, tx: &Transaction) -> Result<HashSet<Sha256dHash>> {
+    fn get_script_hashes_in_tx(&self, tx: &Transaction, blockhash: Option<Sha256dHash>) -> Result<HashSet<Sha256dHash>> {
         let mut script_hashes = HashSet::<Sha256dHash>::new();
         for input in tx.input.iter() {
-            let previous_output_tx =
-                tx_from_value(self.get_transaction(&input.previous_output.txid, false)?)?;
+            if input.previous_output.is_null() {
+                continue;
+            }
+
+            let previous_output_tx = self.load_txn(&input.previous_output.txid, blockhash)?;
 
             let previous_output = previous_output_tx
                 .output
