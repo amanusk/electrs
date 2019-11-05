@@ -536,13 +536,16 @@ impl Query {
         let mut script_hashes = HashSet::<Sha256dHash>::new();
         // TODO: don't fetch all blocks here. Just get txids and fetch them from the index - it's faster
         for blockhash in block_hashes {
-            let txids = self.get_blocktxids(&blockhash)
+            let txids = self
+                .get_blocktxids(&blockhash)
                 .expect(&format!("failed to load txids of blockhash {}", &blockhash));
             for txid in txids {
-                let tx = self.load_txn(&txid, Some(blockhash))
-                    .expect(&format!("failed to load tx {} of blockhash {}", &txid, &blockhash));
+                let tx = self.load_txn(&txid, Some(blockhash)).expect(&format!(
+                    "failed to load tx {} of blockhash {}",
+                    &txid, &blockhash
+                ));
                 let tx_script_hashes = self
-                    .get_script_hashes_in_tx(&tx, Some(blockhash))
+                    .get_script_hashes_in_tx(&tx)
                     .expect(&format!("failed to get script hashes in tx {}", &tx.txid()));
                 script_hashes.extend(tx_script_hashes);
             }
@@ -566,7 +569,7 @@ impl Query {
         let mut script_hashes = HashSet::<Sha256dHash>::new();
         for tx in txs {
             let tx_script_hashes = self
-                .get_script_hashes_in_tx(&tx, None)
+                .get_script_hashes_in_tx(&tx)
                 .expect(&format!("failed to get script hashes in tx {}", &tx.txid()));
             script_hashes.extend(tx_script_hashes);
         }
@@ -578,14 +581,22 @@ impl Query {
         Ok(script_hashes)
     }
 
-    fn get_script_hashes_in_tx(&self, tx: &Transaction, blockhash: Option<Sha256dHash>) -> Result<HashSet<Sha256dHash>> {
+    fn get_script_hashes_in_tx(&self, tx: &Transaction) -> Result<HashSet<Sha256dHash>> {
         let mut script_hashes = HashSet::<Sha256dHash>::new();
         for input in tx.input.iter() {
             if input.previous_output.is_null() {
                 continue;
             }
 
-            let previous_output_tx = self.load_txn(&input.previous_output.txid, blockhash)?;
+            let previous_output_tx_blockhash =
+                self.lookup_confirmed_blockhash(&input.previous_output.txid, None)?;
+            let previous_output_tx = self
+                .load_txn(&input.previous_output.txid, previous_output_tx_blockhash)
+                .expect(&format!(
+                    "failed to get previous_output_tx {} of blockhash {}",
+                    &input.previous_output.txid,
+                    previous_output_tx_blockhash.unwrap_or_default()
+                ));
 
             let previous_output = previous_output_tx
                 .output
