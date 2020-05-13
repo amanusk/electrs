@@ -587,7 +587,7 @@ impl RPC {
 
                 let subscribed_script_hashes = SubscriptionsManager::get_script_hashes()
                     .unwrap_or(vec![]);
-                println!("subscribed_script_hashes.len() = {}", subscribed_script_hashes.len());
+                debug!("subscribed_script_hashes.len() = {}", subscribed_script_hashes.len());
                 let status_hashes = RPC::get_status_hashes(query.clone(), subscribed_script_hashes)
                     .unwrap_or(HashMap::new());
 

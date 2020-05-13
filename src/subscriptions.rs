@@ -19,10 +19,8 @@ impl SubscriptionsManager {
 
         let mut script_hashes = vec![];
         let mut last_evaluated_key = None;
-        let mut i = 0;
 
         loop {
-            println!("in loop");
             // loop until no more pages (1MB limit)
             let scan_input = ScanInput {
                 table_name: format!("{}_AddressInfo", env::var("ENV").unwrap_or(String::from("dev"))),
@@ -44,7 +42,6 @@ impl SubscriptionsManager {
                                     let script_hash = script_hash_res.unwrap();
                                     page_script_hashes.push(script_hash);
                                 }
-                                i = i + 1;
                             }
                             script_hashes.append(&mut page_script_hashes);
                         },
