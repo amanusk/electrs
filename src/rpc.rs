@@ -19,6 +19,7 @@ use crate::metrics::{Gauge, HistogramOpts, HistogramVec, MetricOpts, Metrics};
 use crate::query::{Query, Status};
 use crate::util::FullHash;
 use crate::util::{spawn_thread, Channel, HeaderEntry, SyncChannel};
+use crate::subscriptions::SubscriptionsManager;
 
 const ELECTRS_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: &str = "1.4";
@@ -88,11 +89,12 @@ impl Connection {
         stream: TcpStream,
         addr: SocketAddr,
         stats: Arc<Stats>,
+        status_hashes: HashMap<Sha256dHash, Value>,
     ) -> Connection {
         Connection {
             query,
             last_header_entry: None, // disable header subscription for now
-            status_hashes: HashMap::new(),
+            status_hashes,
             stream,
             addr,
             chan: SyncChannel::new(10),
@@ -582,15 +584,23 @@ impl RPC {
             server: Some(spawn_thread("rpc", move || {
                 let senders = Arc::new(Mutex::new(Vec::<SyncSender<Message>>::new()));
                 let acceptor = RPC::start_acceptor(addr);
+
+                let subscribed_script_hashes = SubscriptionsManager::get_script_hashes()
+                    .unwrap_or(vec![]);
+                println!("subscribed_script_hashes.len() = {}", subscribed_script_hashes.len());
+                let status_hashes = RPC::get_status_hashes(query.clone(), subscribed_script_hashes)
+                    .unwrap_or(HashMap::new());
+
                 RPC::start_notifier(notification, senders.clone(), acceptor.sender());
                 let mut children = vec![];
                 while let Some((stream, addr)) = acceptor.receiver().recv().unwrap() {
                     let query = query.clone();
                     let senders = senders.clone();
                     let stats = stats.clone();
+                    let status_hashes = status_hashes.clone();
                     children.push(spawn_thread("peer", move || {
                         info!("[{}] connected peer", addr);
-                        let conn = Connection::new(query, stream, addr, stats);
+                        let conn = Connection::new(query, stream, addr, stats, status_hashes);
                         senders.lock().unwrap().push(conn.chan.sender());
                         conn.run();
                         info!("[{}] disconnected peer", addr);
@@ -607,6 +617,16 @@ impl RPC {
                 trace!("RPC connections are closed");
             })),
         }
+    }
+
+    fn get_status_hashes(query: Arc<Query>, script_hashes: Vec<Sha256dHash>) -> Result<HashMap<Sha256dHash, Value>> {
+        let mut status_hashes = HashMap::new();
+        for script_hash in script_hashes {
+            let status = query.status(&script_hash[..])?;
+            let result = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
+            status_hashes.insert(script_hash, result.clone());
+        }
+        Ok(status_hashes)
     }
 
     /// Attempt to notify scripthash subscriptions affected by transaction.
