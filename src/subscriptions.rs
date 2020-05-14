@@ -21,12 +21,16 @@ impl SubscriptionsManager {
 
         let mut script_hashes = HashMap::new();
         let mut last_evaluated_key = None;
+        // we need an alias for "status" because that happens to be a saved word
+        let mut expression_attribute_names = HashMap::new();
+        expression_attribute_names.insert(String::from("#statusHash"), String::from("status"));
 
         loop {
             // loop until no more pages (1MB limit)
             let scan_input = ScanInput {
                 table_name: format!("{}_AddressInfo", env::var("ENV").unwrap_or(String::from("dev"))),
-                projection_expression: Some(String::from("electrumHash, status")),
+                projection_expression: Some(String::from("electrumHash, #statusHash")),
+                expression_attribute_names: Some(expression_attribute_names.clone()),
                 exclusive_start_key: last_evaluated_key.clone(),
                 ..Default::default()
             };
