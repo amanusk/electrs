@@ -76,7 +76,7 @@ fn unspent_from_status(status: &Status) -> Value {
 struct Connection {
     query: Arc<Query>,
     last_header_entry: Option<HeaderEntry>,
-    status_hashes: HashMap<Sha256dHash, Value>, // ScriptHash -> StatusHash
+    script_hashes: HashMap<Sha256dHash, Value>, // ScriptHash -> StatusHash
     stream: TcpStream,
     addr: SocketAddr,
     chan: SyncChannel<Message>,
@@ -89,17 +89,24 @@ impl Connection {
         stream: TcpStream,
         addr: SocketAddr,
         stats: Arc<Stats>,
-        status_hashes: HashMap<Sha256dHash, Value>,
+        script_hashes: HashMap<Sha256dHash, Value>,
     ) -> Connection {
-        Connection {
+        let mut conn = Connection {
             query,
             last_header_entry: None, // disable header subscription for now
-            status_hashes,
+            script_hashes: script_hashes.clone(),
             stream,
             addr,
             chan: SyncChannel::new(10),
             stats,
+        };
+
+        for script_hash in script_hashes.keys() {
+            conn.on_scripthash_change(script_hash.into_inner(), None)
+                .expect("Failed while comparing status hashes");
         }
+
+        conn
     }
 
     fn blockchain_headers_subscribe(&mut self) -> Result<Value> {
@@ -208,10 +215,10 @@ impl Connection {
         debug!("blockchain_scripthash_subscribe: script_hash = {}", script_hash);
         let status = self.query.status(&script_hash[..])?;
         let result = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
-        self.status_hashes.insert(script_hash, result.clone());
+        self.script_hashes.insert(script_hash, result.clone());
         self.stats
             .subscriptions
-            .set(self.status_hashes.len() as i64);
+            .set(self.script_hashes.len() as i64);
         Ok(result)
     }
 
@@ -337,12 +344,12 @@ impl Connection {
         })
     }
 
-    fn on_scripthash_change(&mut self, scripthash: FullHash, txid: FullHash) -> Result<()> {
+    fn on_scripthash_change(&mut self, scripthash: FullHash, txid_opt: Option<FullHash>) -> Result<()> {
         let scripthash = Sha256dHash::from_slice(&scripthash[..]).expect("invalid scripthash");
-        let txid = Sha256dHash::from_slice(&txid[..]).expect("invalid txid");
+        let txid_opt = txid_opt.map(|txid| Sha256dHash::from_slice(&txid[..]).expect("invalid txid"));
 
         let old_statushash;
-        match self.status_hashes.get(&scripthash) {
+        match self.script_hashes.get(&scripthash) {
             Some(statushash) => {
                 old_statushash = statushash;
             }
@@ -363,12 +370,18 @@ impl Connection {
             return Ok(());
         }
         timer.observe_duration();
-        debug!("ScriptHash change: scripthash = {}, tx_hash = {}, statushash = {}", scripthash, txid, new_statushash);
+
+        if txid_opt.is_some() {
+            debug!("ScriptHash change: scripthash = {}, tx_hash = {}, statushash = {}", scripthash, txid_opt.unwrap(), new_statushash);
+        } else {
+            debug!("ScriptHash change: scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
+        }
+
         self.send_values(&vec![json!({
             "jsonrpc": "2.0",
             "method": "blockchain.scripthash.subscribe",
             "params": [scripthash.to_hex(), new_statushash]})])?;
-        self.status_hashes.insert(scripthash, new_statushash);
+        self.script_hashes.insert(scripthash, new_statushash);
         Ok(())
     }
 
@@ -430,7 +443,7 @@ impl Connection {
                     };
                     self.send_values(&[reply])?
                 }
-                Message::ScriptHashChange(hash, txid) => self.on_scripthash_change(hash, txid)?,
+                Message::ScriptHashChange(hash, txid) => self.on_scripthash_change(hash, Some(txid))?,
                 Message::ChainTipChange(tip) => self.on_chaintip_change(tip)?,
                 Message::Done => return Ok(()),
             }
@@ -586,10 +599,8 @@ impl RPC {
                 let acceptor = RPC::start_acceptor(addr);
 
                 let subscribed_script_hashes = SubscriptionsManager::get_script_hashes()
-                    .unwrap_or(vec![]);
-                debug!("subscribed_script_hashes.len() = {}", subscribed_script_hashes.len());
-                let status_hashes = RPC::get_status_hashes(query.clone(), subscribed_script_hashes)
                     .unwrap_or(HashMap::new());
+                debug!("subscribed_script_hashes.len() = {}", subscribed_script_hashes.len());
 
                 RPC::start_notifier(notification, senders.clone(), acceptor.sender());
                 let mut children = vec![];
@@ -597,10 +608,10 @@ impl RPC {
                     let query = query.clone();
                     let senders = senders.clone();
                     let stats = stats.clone();
-                    let status_hashes = status_hashes.clone();
+                    let script_hashes = subscribed_script_hashes.clone();
                     children.push(spawn_thread("peer", move || {
                         info!("[{}] connected peer", addr);
-                        let conn = Connection::new(query, stream, addr, stats, status_hashes);
+                        let conn = Connection::new(query, stream, addr, stats, script_hashes);
                         senders.lock().unwrap().push(conn.chan.sender());
                         conn.run();
                         info!("[{}] disconnected peer", addr);
@@ -617,16 +628,6 @@ impl RPC {
                 trace!("RPC connections are closed");
             })),
         }
-    }
-
-    fn get_status_hashes(query: Arc<Query>, script_hashes: Vec<Sha256dHash>) -> Result<HashMap<Sha256dHash, Value>> {
-        let mut status_hashes = HashMap::new();
-        for script_hash in script_hashes {
-            let status = query.status(&script_hash[..])?;
-            let result = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
-            status_hashes.insert(script_hash, result.clone());
-        }
-        Ok(status_hashes)
     }
 
     /// Attempt to notify scripthash subscriptions affected by transaction.

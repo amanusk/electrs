@@ -9,22 +9,24 @@ use std::env;
 use std::format;
 
 use crate::errors::*;
+use std::collections::HashMap;
+use serde_json::Value;
 
 pub struct SubscriptionsManager {}
 
 impl SubscriptionsManager {
 
-    pub fn get_script_hashes() -> Result<Vec<Sha256dHash>> {
+    pub fn get_script_hashes() -> Result<HashMap<Sha256dHash, Value>> {
         let client = DynamoDbClient::new(Region::UsWest2);
 
-        let mut script_hashes = vec![];
+        let mut script_hashes = HashMap::new();
         let mut last_evaluated_key = None;
 
         loop {
             // loop until no more pages (1MB limit)
             let scan_input = ScanInput {
                 table_name: format!("{}_AddressInfo", env::var("ENV").unwrap_or(String::from("dev"))),
-                projection_expression: Some(String::from("electrumHash")),
+                projection_expression: Some(String::from("electrumHash, status")),
                 exclusive_start_key: last_evaluated_key.clone(),
                 ..Default::default()
             };
@@ -33,17 +35,23 @@ impl SubscriptionsManager {
                 Ok(output) => {
                     match output.items {
                         Some(items) => {
-                            let mut page_script_hashes = vec![];
                             for item in items {
                                 let script_hash_attribute_value = item.get("electrumHash").unwrap();
                                 let script_hash_str = script_hash_attribute_value.s.as_ref().unwrap();
                                 let script_hash_res = Sha256dHash::from_hex(&script_hash_str);
                                 if script_hash_res.is_ok() {
                                     let script_hash = script_hash_res.unwrap();
-                                    page_script_hashes.push(script_hash);
+
+                                    let status_hash_attribute_value = item.get("electrumHash").unwrap();
+                                    let status_hash_str = status_hash_attribute_value.s.as_ref().unwrap();
+                                    let status_hash = match Sha256dHash::from_hex(&status_hash_str) {
+                                        Ok(h) => json!(hex::encode(h)),
+                                        Err(_) => Value::Null,
+                                    };
+
+                                    script_hashes.insert(script_hash, status_hash);
                                 }
                             }
-                            script_hashes.append(&mut page_script_hashes);
                         },
                         None => {
                             bail!(ErrorKind::DynamoDB("Failed fetching script hashes from DB".to_string()))
