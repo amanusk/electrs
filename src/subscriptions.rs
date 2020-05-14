@@ -47,13 +47,14 @@ impl SubscriptionsManager {
                                     let script_hash = script_hash_res.unwrap();
 
                                     let status_hash_attribute_value_option = item.get("status");
-                                    let status_hash_str = match status_hash_attribute_value_option {
-                                        Some(status_hash_attribute_value) => status_hash_attribute_value.s.as_ref().unwrap(),
-                                        None => "",
+                                    let status_hash_str_option =
+                                        status_hash_attribute_value_option.map(|attr_value| attr_value.s.as_ref().unwrap());
+                                    let status_hash = match status_hash_str_option {
+                                        Some(s) => json!(s),
+                                        None => Value::Null,
                                     };
-                                    let status_hash = json!(status_hash_str);
 
-                                    debug!("script_hash = {:?}, status_hash = {:?}", script_hash, status_hash);
+                                    println!("script_hash = {:?}, status_hash = {:?}", script_hash, status_hash);
                                     script_hashes.insert(script_hash, status_hash);
                                 }
                             }

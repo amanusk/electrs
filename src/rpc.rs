@@ -12,6 +12,7 @@ use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc::{Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 
 use crate::errors::*;
 use crate::index::compute_script_hash;
@@ -91,22 +92,15 @@ impl Connection {
         stats: Arc<Stats>,
         script_hashes: HashMap<Sha256dHash, Value>,
     ) -> Connection {
-        let mut conn = Connection {
+        Connection {
             query,
             last_header_entry: None, // disable header subscription for now
-            script_hashes: script_hashes.clone(),
+            script_hashes,
             stream,
             addr,
             chan: SyncChannel::new(10),
             stats,
-        };
-
-        for script_hash in script_hashes.keys() {
-            conn.on_scripthash_change(script_hash.into_inner(), None)
-                .expect("Failed while comparing status hashes");
         }
-
-        conn
     }
 
     fn blockchain_headers_subscribe(&mut self) -> Result<Value> {
@@ -482,6 +476,15 @@ impl Connection {
         let reader = BufReader::new(self.stream.try_clone().expect("failed to clone TcpStream"));
         let tx = self.chan.sender();
         let child = spawn_thread("reader", || Connection::handle_requests(reader, tx));
+
+        let now = Instant::now();
+        let script_hashes = self.script_hashes.clone();
+        for script_hash in script_hashes.keys() {
+            self.on_scripthash_change(script_hash.into_inner(), None)
+                .expect("Failed while comparing status hashes");
+        }
+        debug!("Connection::run, comparing status hashes took {}", now.elapsed().as_secs());
+
         if let Err(e) = self.handle_replies() {
             error!(
                 "[{}] connection handling failed: {}",
