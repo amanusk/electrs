@@ -92,15 +92,24 @@ impl Connection {
         stats: Arc<Stats>,
         script_hashes: HashMap<Sha256dHash, Value>,
     ) -> Connection {
-        Connection {
+        let mut conn = Connection {
             query,
             last_header_entry: None, // disable header subscription for now
-            script_hashes,
+            script_hashes: script_hashes.clone(),
             stream,
             addr,
             chan: SyncChannel::new(10),
             stats,
+        };
+
+        let now = Instant::now();
+        for script_hash in script_hashes.keys() {
+            conn.on_scripthash_change(script_hash.into_inner(), None)
+                .expect("Failed while comparing status hashes");
         }
+        debug!("Connection::run, comparing status hashes took {} seconds", now.elapsed().as_secs());
+
+        conn
     }
 
     fn blockchain_headers_subscribe(&mut self) -> Result<Value> {
@@ -417,14 +426,6 @@ impl Connection {
 
     fn handle_replies(&mut self) -> Result<()> {
         let empty_params = json!([]);
-
-        let now = Instant::now();
-        let script_hashes = self.script_hashes.clone();
-        for script_hash in script_hashes.keys() {
-            self.on_scripthash_change(script_hash.into_inner(), None)
-                .expect("Failed while comparing status hashes");
-        }
-        debug!("Connection::run, comparing status hashes took {} seconds", now.elapsed().as_secs());
 
         loop {
             let msg = self.chan.receiver().recv().chain_err(|| "channel closed")?;
