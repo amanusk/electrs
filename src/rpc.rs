@@ -417,6 +417,15 @@ impl Connection {
 
     fn handle_replies(&mut self) -> Result<()> {
         let empty_params = json!([]);
+
+        let now = Instant::now();
+        let script_hashes = self.script_hashes.clone();
+        for script_hash in script_hashes.keys() {
+            self.on_scripthash_change(script_hash.into_inner(), None)
+                .expect("Failed while comparing status hashes");
+        }
+        debug!("Connection::run, comparing status hashes took {} seconds", now.elapsed().as_secs());
+
         loop {
             let msg = self.chan.receiver().recv().chain_err(|| "channel closed")?;
             match msg {
@@ -476,15 +485,6 @@ impl Connection {
         let reader = BufReader::new(self.stream.try_clone().expect("failed to clone TcpStream"));
         let tx = self.chan.sender();
         let child = spawn_thread("reader", || Connection::handle_requests(reader, tx));
-
-        let now = Instant::now();
-        let script_hashes = self.script_hashes.clone();
-        for script_hash in script_hashes.keys() {
-            self.on_scripthash_change(script_hash.into_inner(), None)
-                .expect("Failed while comparing status hashes");
-        }
-        debug!("Connection::run, comparing status hashes took {}", now.elapsed().as_secs());
-
         if let Err(e) = self.handle_replies() {
             error!(
                 "[{}] connection handling failed: {}",
