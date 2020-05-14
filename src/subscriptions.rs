@@ -54,7 +54,6 @@ impl SubscriptionsManager {
                                         None => Value::Null,
                                     };
 
-                                    println!("script_hash = {:?}, status_hash = {:?}", script_hash, status_hash);
                                     script_hashes.insert(script_hash, status_hash);
                                 }
                             }
