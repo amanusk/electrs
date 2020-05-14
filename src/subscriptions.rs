@@ -42,13 +42,14 @@ impl SubscriptionsManager {
                                 if script_hash_res.is_ok() {
                                     let script_hash = script_hash_res.unwrap();
 
-                                    let status_hash_attribute_value = item.get("electrumHash").unwrap();
-                                    let status_hash_str = status_hash_attribute_value.s.as_ref().unwrap();
-                                    let status_hash = match Sha256dHash::from_hex(&status_hash_str) {
-                                        Ok(h) => json!(hex::encode(h)),
-                                        Err(_) => Value::Null,
+                                    let status_hash_attribute_value_option = item.get("status");
+                                    let status_hash_str = match status_hash_attribute_value_option {
+                                        Some(status_hash_attribute_value) => status_hash_attribute_value.s.as_ref().unwrap(),
+                                        None => "",
                                     };
+                                    let status_hash = json!(status_hash_str);
 
+                                    debug!("script_hash = {:?}, status_hash = {:?}", script_hash, status_hash);
                                     script_hashes.insert(script_hash, status_hash);
                                 }
                             }
