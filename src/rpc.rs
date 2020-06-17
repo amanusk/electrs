@@ -97,7 +97,7 @@ impl Connection {
         let now = Instant::now();
         let script_hashes = SubscriptionsManager::get_script_hashes()
             .unwrap_or(HashMap::new());
-        debug!("subscribed_script_hashes.len() = {}, took {} milliseconds", script_hashes.len(), now.elapsed().as_millis());
+        debug!("script_hashes.len() = {}, took {} milliseconds", script_hashes.len(), now.elapsed().as_millis());
         Connection {
             query,
             last_header_entry: None, // disable header subscription for now
@@ -485,6 +485,7 @@ impl Connection {
     }
 
     fn compare_status_hashes(script_hashes: HashMap<Sha256dHash, Value>, query: Arc<Query>, tx: SyncSender<Message>) -> Result<()> {
+        debug!("compare_status_hashes: script_hashes.len() = {}, starting");
         let now = Instant::now();
         for scripthash in script_hashes.keys() {
             let old_statushash;
@@ -509,7 +510,7 @@ impl Connection {
                 .expect("send error");
         }
 
-        debug!("compare_status_hashes: {} script_hashes, took {} seconds.", script_hashes.len(), now.elapsed().as_secs());
+        debug!("compare_status_hashes: script_hashes.len() = {}, took {} seconds", script_hashes.len(), now.elapsed().as_secs());
         Ok(())
     }
 
