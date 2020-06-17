@@ -485,7 +485,7 @@ impl Connection {
     }
 
     fn compare_status_hashes(script_hashes: HashMap<Sha256dHash, Value>, query: Arc<Query>, tx: SyncSender<Message>) -> Result<()> {
-        debug!("compare_status_hashes: script_hashes.len() = {}, starting");
+        debug!("compare_status_hashes: script_hashes.len() = {}, starting", script_hashes.len());
         let now = Instant::now();
         for scripthash in script_hashes.keys() {
             let old_statushash;
