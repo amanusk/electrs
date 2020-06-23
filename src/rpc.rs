@@ -488,13 +488,16 @@ impl Connection {
         debug!("compare_status_hashes: script_hashes.len() = {}, starting", script_hashes.len());
         let now = Instant::now();
         let rx = connection.receiver();
-        for scripthash in script_hashes.keys() {
-            match rx.try_recv() {
-                Ok(_) | Err(TryRecvError::Disconnected) => {
-                    debug!("compare_status_hashes: channel is closed, shutting down");
-                    break;
+        for (i, scripthash) in script_hashes.keys().enumerate() {
+            if i % 1000 == 0 {
+                debug!("compare_status_hashes: comparing {} out of {}", i, script_hashes.len());
+                match rx.try_recv() {
+                    Ok(_) | Err(TryRecvError::Disconnected) => {
+                        debug!("compare_status_hashes: channel is closed, shutting down");
+                        break;
+                    }
+                    Err(TryRecvError::Empty) => {}
                 }
-                Err(TryRecvError::Empty) => {}
             }
 
             let old_statushash;
