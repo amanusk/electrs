@@ -491,7 +491,7 @@ impl Connection {
         for scripthash in script_hashes.keys() {
             match rx.try_recv() {
                 Ok(_) | Err(TryRecvError::Disconnected) => {
-                    println!("compare_status_hashes: channel is closed, shutting down");
+                    debug!("compare_status_hashes: channel is closed, shutting down");
                     break;
                 }
                 Err(TryRecvError::Empty) => {}
