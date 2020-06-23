@@ -484,7 +484,7 @@ impl Connection {
         }
     }
 
-    fn compare_status_hashes(script_hashes: HashMap<Sha256dHash, Value>, query: Arc<Query>, tx: SyncSender<Message>, connection: SyncChannel<_>) -> Result<()> {
+    fn compare_status_hashes(script_hashes: HashMap<Sha256dHash, Value>, query: Arc<Query>, tx: SyncSender<Message>, connection: SyncChannel<Message>) -> Result<()> {
         debug!("compare_status_hashes: script_hashes.len() = {}, starting", script_hashes.len());
         let now = Instant::now();
         let rx = connection.receiver();
@@ -544,7 +544,7 @@ impl Connection {
         }
         debug!("[{}] shutting down connection", self.addr);
         let _ = self.stream.shutdown(Shutdown::Both);
-        let _ = shutdown_sender.send(true);
+        let _ = shutdown_sender.send(Message::Done);
         if let Err(err) = reader_child.join().expect("receiver panicked") {
             error!("[{}] receiver failed: {}", self.addr, err);
         }
