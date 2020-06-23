@@ -10,7 +10,7 @@ use serde_json::{from_str, Value};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::mpsc::{Sender, SyncSender, TrySendError};
+use std::sync::mpsc::{Sender, SyncSender, TrySendError, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -484,9 +484,10 @@ impl Connection {
         }
     }
 
-    fn compare_status_hashes(script_hashes: HashMap<Sha256dHash, Value>, query: Arc<Query>, tx: SyncSender<Message>) -> Result<()> {
+    fn compare_status_hashes(script_hashes: HashMap<Sha256dHash, Value>, query: Arc<Query>, tx: SyncSender<Message>, connection_channel: SyncChannel<Message>) -> Result<()> {
         debug!("compare_status_hashes: script_hashes.len() = {}, starting", script_hashes.len());
         let now = Instant::now();
+        let rx = connection_channel.receiver();
         for scripthash in script_hashes.keys() {
             let old_statushash;
             match script_hashes.get(scripthash) {
@@ -508,6 +509,14 @@ impl Connection {
             debug!("compare_status_hashes: found diff. scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
             tx.send(Message::ScriptHashChange(scripthash_buffer, None))
                 .expect("send error");
+
+            match rx.try_recv() {
+                Ok(Message::Done) | Err(TryRecvError::Disconnected) => {
+                    debug!("compare_status_hashes: terminating");
+                    break;
+                }
+                Ok(_) | Err(TryRecvError::Empty) => {}
+            }
         }
 
         debug!("compare_status_hashes: script_hashes.len() = {}, took {} seconds", script_hashes.len(), now.elapsed().as_secs());
@@ -522,7 +531,9 @@ impl Connection {
         let script_hashes = self.script_hashes.clone();
         let query = Arc::clone(&self.query);
         let tx2 = self.chan.sender();
-        let status_hashes_child = spawn_thread("status_hashes_comparer", || Connection::compare_status_hashes(script_hashes, query, tx2));
+        let shutdown_channel = SyncChannel::new(1);
+        let shutdown_sender = shutdown_channel.sender();
+        spawn_thread("status_hashes_comparer", move || Connection::compare_status_hashes(script_hashes, query, tx2, shutdown_channel));
 
         if let Err(e) = self.handle_replies() {
             error!(
@@ -533,10 +544,10 @@ impl Connection {
         }
         debug!("[{}] shutting down connection", self.addr);
         let _ = self.stream.shutdown(Shutdown::Both);
-        if let Err(err) = reader_child.join().expect("receiver panicked") {
-            error!("[{}] receiver failed: {}", self.addr, err);
+        if let Err(err) = shutdown_sender.try_send(Message::Done) {
+            debug!("tried to shut down status_hashes_comparer, got error: {}", err);
         }
-        if let Err(err) = status_hashes_child.join().expect("status hashes comparer panicked") {
+        if let Err(err) = reader_child.join().expect("receiver panicked") {
             error!("[{}] receiver failed: {}", self.addr, err);
         }
     }
