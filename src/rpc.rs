@@ -508,8 +508,9 @@ impl Connection {
             }
 
             debug!("compare_status_hashes: found diff. scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
-            tx.send(Message::ScriptHashChange(scripthash_buffer, None))
-                .expect("send error");
+            if let Err(_) = tx.send(Message::ScriptHashChange(scripthash_buffer, None)) {
+                debug!("compare_status_hashes: send failed because the channel is closed, shutting down")
+            }
         }
 
         debug!("compare_status_hashes: script_hashes.len() = {}, took {} seconds", script_hashes.len(), now.elapsed().as_secs());
