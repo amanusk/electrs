@@ -488,7 +488,7 @@ impl Connection {
         debug!("compare_status_hashes: script_hashes.len() = {}, starting", script_hashes.len());
         let now = Instant::now();
         let rx = connection.receiver();
-        for (i, scripthash) in script_hashes.keys().enumerate() {
+        for (i, (scripthash, old_statushash)) in script_hashes.iter().enumerate() {
             if i % 1000 == 0 {
                 debug!("compare_status_hashes: comparing {} out of {}", i, script_hashes.len());
                 match rx.try_recv() {
@@ -499,16 +499,6 @@ impl Connection {
                     Err(TryRecvError::Empty) => {}
                 }
             }
-
-            let old_statushash;
-            match script_hashes.get(scripthash) {
-                Some(statushash) => {
-                    old_statushash = statushash;
-                }
-                None => {
-                    return Ok(());
-                }
-            };
 
             let scripthash_buffer = scripthash.into_inner();
             let status = query.status(&scripthash_buffer)?;
