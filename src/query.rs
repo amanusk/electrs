@@ -205,6 +205,12 @@ impl Query {
         })
     }
 
+    pub fn txids_count_by_script_hash(&self, script_hash: &[u8]) -> usize {
+        let read_store = self.app.read_store();
+        let txid_prefixes = txids_by_script_hash(read_store, script_hash);
+        txid_prefixes.len()
+    }
+
     fn load_txns_by_prefix(
         &self,
         store: &dyn ReadStore,

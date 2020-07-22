@@ -246,6 +246,13 @@ impl Connection {
         )))
     }
 
+    fn blockchain_scripthash_get_history_txs_count(&self, params: &[Value]) -> Result<Value> {
+        let script_hash =
+            hash_from_value::<Sha256dHash>(params.get(0)).chain_err(|| "bad script_hash")?;
+        let txs_count = self.query.txids_count_by_script_hash(&script_hash[..]);
+        Ok(json!(txs_count))
+    }
+
     fn blockchain_scripthash_listunspent(&self, params: &[Value]) -> Result<Value> {
         let script_hash =
             hash_from_value::<Sha256dHash>(params.get(0)).chain_err(|| "bad script_hash")?;
@@ -316,6 +323,7 @@ impl Connection {
             "blockchain.relayfee" => self.blockchain_relayfee(),
             "blockchain.scripthash.get_balance" => self.blockchain_scripthash_get_balance(&params),
             "blockchain.scripthash.get_history" => self.blockchain_scripthash_get_history(&params),
+            "blockchain.scripthash.get_history_txs_count" => self.blockchain_scripthash_get_history_txs_count(&params),
             "blockchain.scripthash.listunspent" => self.blockchain_scripthash_listunspent(&params),
             "blockchain.scripthash.subscribe" => self.blockchain_scripthash_subscribe(&params),
             "blockchain.transaction.broadcast" => self.blockchain_transaction_broadcast(&params),
