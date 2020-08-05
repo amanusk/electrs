@@ -244,7 +244,7 @@ impl Connection {
                 .map(|item| json!({"height": item.0, "tx_hash": item.1.to_hex()}))
                 .collect()
         ));
-        trace!("history for {:?}: {}",  script_hash, history);
+        trace!("history for {:?}: {}",  script_hash, history.to_string());
         Ok(history)
     }
 
