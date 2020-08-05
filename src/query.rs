@@ -414,8 +414,9 @@ impl Query {
     where
         F: FnMut(&Txid),
     {
-        let txid = self.app.daemon().getblocktxids(blockhash)?;
-        for t in txid {
+        let txids = self.app.daemon().getblocktxids(blockhash)?;
+        trace!("with_blocktxids: txids.len() = {:?}", txids.len());
+        for t in txids {
             callb(&t)
         }
         Ok(())

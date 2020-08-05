@@ -237,13 +237,15 @@ impl Connection {
         let script_hash =
             hash_from_value::<Sha256dHash>(params.get(0)).chain_err(|| "bad script_hash")?;
         let status = self.query.status(&script_hash[..])?;
-        Ok(json!(Value::Array(
+        let history = json!(Value::Array(
             status
                 .history()
                 .into_iter()
                 .map(|item| json!({"height": item.0, "tx_hash": item.1.to_hex()}))
                 .collect()
-        )))
+        ));
+        trace!("history for {:?}: {:?}",  script_hash, history);
+        Ok(history)
     }
 
     fn blockchain_scripthash_listunspent(&self, params: &[Value]) -> Result<Value> {
@@ -357,6 +359,7 @@ impl Connection {
         match self.script_hashes.get(&scripthash) {
             Some(statushash) => {
                 old_statushash = statushash;
+                trace!("on_scripthash_change: scripthash = {}, old_statushash = {}", scripthash, old_statushash);
             }
             None => {
                 return Ok(());
@@ -759,6 +762,7 @@ impl RPC {
             let blockhash = header.header().bitcoin_hash();
             let blockheight = header.height();
             let res = self.query.with_blocktxids(&blockhash, |txid| {
+                trace!("block try_notify_subscriptions_for_tx: {:?}", txid);
                 if let Err(e) = self.try_notify_subscriptions_for_tx(
                     &txid,
                     Some(blockheight as u32),
