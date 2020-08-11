@@ -4,10 +4,7 @@
     <cargoProject FILE="$PROJECT_DIR$/Cargo.toml" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="176b3bf3-01ef-469a-8334-1a22a87285a1" name="Default Changelist" comment="">
-      <change beforePath="$PROJECT_DIR$/config_spec.toml" beforeDir="false" afterPath="$PROJECT_DIR$/config_spec.toml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/query.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/query.rs" afterDir="false" />
-    </list>
+    <list default="true" id="176b3bf3-01ef-469a-8334-1a22a87285a1" name="Default Changelist" comment="" />
     <ignored path="$PROJECT_DIR$/.tmp/" />
     <ignored path="$PROJECT_DIR$/temp/" />
     <ignored path="$PROJECT_DIR$/tmp/" />
@@ -181,12 +178,12 @@
       <option name="presentableId" value="Default" />
       <updated>1597122497381</updated>
       <workItem from="1597122499786" duration="2191000" />
-      <workItem from="1597163712391" duration="1028000" />
+      <workItem from="1597163712391" duration="1369000" />
     </task>
     <servers />
   </component>
   <component name="TimeTrackingManager">
-    <option name="totallyTimeSpent" value="3219000" />
+    <option name="totallyTimeSpent" value="3560000" />
   </component>
   <component name="ToolWindowManager">
     <frame x="0" y="0" width="1440" height="900" extended-state="0" />
