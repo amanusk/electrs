@@ -283,8 +283,9 @@ impl Query {
         // if the limit is enabled
         if self.txid_limit > 0 && txid_prefixes.len() > self.txid_limit {
             bail!(
-                "{}+ transactions found, query may take a long time",
-                txid_prefixes.len()
+                "{}+ transactions found for script_hash {:?}, query may take a long time",
+                txid_prefixes.len(),
+                script_hash
             );
         }
         for t in self.load_txns_by_prefix(read_store, txid_prefixes)? {
