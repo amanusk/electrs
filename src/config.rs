@@ -309,6 +309,7 @@ debug_struct! { Config,
     bulk_index_threads,
     tx_cache_size,
     txid_limit,
+    txid_warning_limit,
     server_banner,
     blocktxids_cache_size,
 }
