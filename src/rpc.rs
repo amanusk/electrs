@@ -594,25 +594,27 @@ impl RPC {
                 let mut senders = senders.lock().unwrap();
                 match msg {
                     Notification::ScriptHashChange(hash, txid) => {
-                        for sender in senders.split_off(0) {
+                        senders.retain(|sender| {
                             if let Err(TrySendError::Disconnected(_)) =
                                 sender.try_send(Message::ScriptHashChange(hash, Some(txid)))
                             {
-                                continue;
+                                false // drop disconnected clients
+                            } else {
+                                true
                             }
-                            senders.push(sender);
-                        }
-                    }
+                        })
+                    },
                     Notification::ChainTipChange(hash) => {
-                        for sender in senders.split_off(0) {
+                        senders.retain(|sender| {
                             if let Err(TrySendError::Disconnected(_)) =
                                 sender.try_send(Message::ChainTipChange(hash.clone()))
                             {
-                                continue;
+                                false // drop disconnected clients
+                            } else {
+                                true
                             }
-                            senders.push(sender);
-                        }
-                    }
+                        })
+                    },
                     Notification::Exit => acceptor.send(None).unwrap(), // mark acceptor as done
                 }
             }
@@ -731,7 +733,7 @@ impl RPC {
             .map(|o| compute_script_hash(&o.script_pubkey[..]))
             .collect();
 
-        trace!("try_notify_subscriptions_for_tx: txid = {}, block_height = {:?}, scripthashes = {:?}", txid, block_height, scripthashes);
+        trace!("try_notify_subscriptions_for_tx: txid = {}, block_height = {:?}, scripthashes.len() = {}", txid, block_height, scripthashes.len());
         for s in scripthashes {
             if let Err(e) = self.notification.send(Notification::ScriptHashChange(s, txid.into_inner())) {
                 trace!("ScriptHash change notification failed {}", e);
