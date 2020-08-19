@@ -731,6 +731,7 @@ impl RPC {
             .map(|o| compute_script_hash(&o.script_pubkey[..]))
             .collect();
 
+        trace!("try_notify_subscriptions_for_tx: txid = {}, block_height = {:?}, scripthashes = {:?}", txid, block_height, scripthashes);
         for s in scripthashes {
             if let Err(e) = self.notification.send(Notification::ScriptHashChange(s, txid.into_inner())) {
                 trace!("ScriptHash change notification failed {}", e);
@@ -772,7 +773,6 @@ impl RPC {
             let blockhash = header.header().bitcoin_hash();
             let blockheight = header.height();
             let res = self.query.with_blocktxids(&blockhash, |txid| {
-                trace!("block try_notify_subscriptions_for_tx: {:?}", txid);
                 if let Err(e) = self.try_notify_subscriptions_for_tx(
                     &txid,
                     Some(blockheight as u32),
