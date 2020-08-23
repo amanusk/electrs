@@ -10,7 +10,7 @@ use serde_json::{from_str, Value};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::mpsc::{Sender, SyncSender, TrySendError, TryRecvError};
+use std::sync::mpsc::{Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -602,7 +602,7 @@ impl RPC {
                         debug!("Notification::ScriptHashChange(scripthash = {}, txid = {}, senders.len() = {})", scripthash, _txid, senders.len());
                         senders.retain(|sender| {
                             if let Err(e) =
-                                sender.try_send(Message::ScriptHashChange(hash, Some(txid)))
+                                sender.send(Message::ScriptHashChange(hash, Some(txid)))
                             {
                                 debug!("try_send Err on (scripthash = {}, txid = {}, error = {})", scripthash, _txid, e.to_string());
                                 false // drop disconnected clients
@@ -614,8 +614,8 @@ impl RPC {
                     },
                     Notification::ChainTipChange(hash) => {
                         senders.retain(|sender| {
-                            if let Err(TrySendError::Disconnected(_)) =
-                                sender.try_send(Message::ChainTipChange(hash.clone()))
+                            if let Err(_) =
+                                sender.send(Message::ChainTipChange(hash.clone()))
                             {
                                 false // drop disconnected clients
                             } else {
