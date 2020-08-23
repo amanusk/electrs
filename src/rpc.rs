@@ -1,7 +1,6 @@
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::consensus::encode::{deserialize, serialize};
-use bitcoin::hash_types::Txid;
-use bitcoin::util::hash::BitcoinHash;
+use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin_hashes::hex::{FromHex, ToHex};
 use bitcoin_hashes::{sha256d::Hash as Sha256dHash, Hash};
 use error_chain::ChainedError;
@@ -10,7 +9,7 @@ use serde_json::{from_str, Value};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::mpsc::{Sender, SyncSender, TryRecvError};
+use std::sync::mpsc::{Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -73,6 +72,17 @@ fn unspent_from_status(status: &Status) -> Value {
             }))
             .collect()
     ))
+}
+
+fn get_output_scripthash(txn: &Transaction, n: Option<usize>) -> Vec<FullHash> {
+    if let Some(out) = n {
+        vec![compute_script_hash(&txn.output[out].script_pubkey[..])]
+    } else {
+        txn.output
+            .iter()
+            .map(|o| compute_script_hash(&o.script_pubkey[..]))
+            .collect()
+    }
 }
 
 struct Connection {
@@ -351,18 +361,27 @@ impl Connection {
         })
     }
 
-    fn on_scripthash_change(&mut self, scripthash: FullHash, txid_opt: Option<FullHash>) -> Result<()> {
+    fn on_scripthashes_change(&mut self, scripthashes: HashSet<FullHash>) -> Result<()> {
+        for s in scripthashes {
+            if let Err(e) = self.on_scripthash_change(s) {
+                error!("on_scripthash_change error: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn on_scripthash_change(&mut self, scripthash: FullHash) -> Result<()> {
         let scripthash = Sha256dHash::from_slice(&scripthash[..]).expect("invalid scripthash");
-        let txid_opt = txid_opt.map(|txid| Sha256dHash::from_slice(&txid[..]).expect("invalid txid"));
 
         let old_statushash;
         match self.script_hashes.get(&scripthash) {
             Some(statushash) => {
                 old_statushash = statushash;
-                debug!("on_scripthash_change PRE: scripthash = {}, old_statushash = {}, txid_opt = {:?}", scripthash, old_statushash, txid_opt);
+                debug!("on_scripthash_change PRE: scripthash = {}, old_statushash = {}", scripthash, old_statushash);
             }
             None => {
-                debug!("on_scripthash_change DID NOT FIND: scripthash = {}, txid_opt = {:?}", scripthash, txid_opt);
+                debug!("on_scripthash_change DID NOT FIND: scripthash = {}", scripthash);
                 return Ok(());
             }
         };
@@ -381,17 +400,12 @@ impl Connection {
         let status = status_result.unwrap();
         let new_statushash = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
         if new_statushash == *old_statushash {
-            debug!("on_scripthash_change SAME STATUS HASH: scripthash = {}, old_statushash = {}, txid_opt = {:?}", scripthash, old_statushash, txid_opt);
+            debug!("on_scripthash_change SAME STATUS HASH: scripthash = {}, old_statushash = {}", scripthash, old_statushash);
             return Ok(());
         }
         timer.observe_duration();
 
-//        if txid_opt.is_some() {
-//            debug!("ScriptHash change: scripthash = {}, tx_hash = {}, statushash = {}", scripthash, txid_opt.unwrap(), new_statushash);
-//        } else {
-//            debug!("ScriptHash change: scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
-//        }
-        debug!("on_scripthash_change POST: scripthash = {}, old_statushash = {}, new_statushash = {}, txid_opt = {:?}", scripthash, old_statushash, new_statushash, txid_opt);
+        debug!("on_scripthash_change POST: scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
 
         self.send_values(&vec![json!({
             "jsonrpc": "2.0",
@@ -460,7 +474,7 @@ impl Connection {
                     };
                     self.send_values(&[reply])?
                 }
-                Message::ScriptHashChange(hash, txid) => self.on_scripthash_change(hash, txid)?,
+                Message::ScriptHashChange(scripthashes) => self.on_scripthashes_change(scripthashes)?,
                 Message::ChainTipChange(tip) => self.on_chaintip_change(tip)?,
                 Message::Done => return Ok(()),
             }
@@ -495,55 +509,55 @@ impl Connection {
         }
     }
 
-    fn compare_status_hashes(script_hashes: HashMap<Sha256dHash, Value>, query: Arc<Query>, tx: SyncSender<Message>, connection: SyncChannel<Message>) -> Result<()> {
-        debug!("compare_status_hashes: script_hashes.len() = {}, starting", script_hashes.len());
-        let now = Instant::now();
-        let rx = connection.receiver();
-        for (i, (scripthash, old_statushash)) in script_hashes.iter().enumerate() {
-            if i % 1000 == 0 {
-                debug!("compare_status_hashes: comparing {} out of {}", i, script_hashes.len());
-                match rx.try_recv() {
-                    Ok(_) | Err(TryRecvError::Disconnected) => {
-                        debug!("compare_status_hashes: channel is closed, shutting down");
-                        break;
-                    }
-                    Err(TryRecvError::Empty) => {}
-                }
-            }
-
-            let scripthash_buffer = scripthash.into_inner();
-            let status_result = query.status(&scripthash_buffer);
-            if status_result.is_err() {
-                warn!("compare_status_hashes error - {}", status_result.err().unwrap());
-                continue;
-            }
-            let status = status_result.unwrap();
-            let new_statushash = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
-            if new_statushash == *old_statushash {
-                continue;
-            }
-
-            debug!("compare_status_hashes: found diff. scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
-            if let Err(_) = tx.send(Message::ScriptHashChange(scripthash_buffer, None)) {
-                debug!("compare_status_hashes: send failed because the channel is closed, shutting down")
-            }
-        }
-
-        debug!("compare_status_hashes: script_hashes.len() = {}, took {} seconds", script_hashes.len(), now.elapsed().as_secs());
-        Ok(())
-    }
+//    fn compare_status_hashes(script_hashes: HashMap<Sha256dHash, Value>, query: Arc<Query>, tx: SyncSender<Message>, connection: SyncChannel<Message>) -> Result<()> {
+//        debug!("compare_status_hashes: script_hashes.len() = {}, starting", script_hashes.len());
+//        let now = Instant::now();
+//        let rx = connection.receiver();
+//        for (i, (scripthash, old_statushash)) in script_hashes.iter().enumerate() {
+//            if i % 1000 == 0 {
+//                debug!("compare_status_hashes: comparing {} out of {}", i, script_hashes.len());
+//                match rx.try_recv() {
+//                    Ok(_) | Err(TryRecvError::Disconnected) => {
+//                        debug!("compare_status_hashes: channel is closed, shutting down");
+//                        break;
+//                    }
+//                    Err(TryRecvError::Empty) => {}
+//                }
+//            }
+//
+//            let scripthash_buffer = scripthash.into_inner();
+//            let status_result = query.status(&scripthash_buffer);
+//            if status_result.is_err() {
+//                warn!("compare_status_hashes error - {}", status_result.err().unwrap());
+//                continue;
+//            }
+//            let status = status_result.unwrap();
+//            let new_statushash = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
+//            if new_statushash == *old_statushash {
+//                continue;
+//            }
+//
+//            debug!("compare_status_hashes: found diff. scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
+//            if let Err(_) = tx.send(Message::ScriptHashChange(scripthash_buffer, None)) {
+//                debug!("compare_status_hashes: send failed because the channel is closed, shutting down")
+//            }
+//        }
+//
+//        debug!("compare_status_hashes: script_hashes.len() = {}, took {} seconds", script_hashes.len(), now.elapsed().as_secs());
+//        Ok(())
+//    }
 
     pub fn run(mut self) {
         let reader = BufReader::new(self.stream.try_clone().expect("failed to clone TcpStream"));
         let tx = self.chan.sender();
         let reader_child = spawn_thread("reader", || Connection::handle_requests(reader, tx));
 
-        let script_hashes = self.script_hashes.clone();
-        let query = Arc::clone(&self.query);
-        let tx2 = self.chan.sender();
-        let shutdown_channel = SyncChannel::new(1);
-        let shutdown_sender = shutdown_channel.sender();
-        spawn_thread("status_hashes_comparer", || Connection::compare_status_hashes(script_hashes, query, tx2, shutdown_channel));
+//        let script_hashes = self.script_hashes.clone();
+//        let query = Arc::clone(&self.query);
+//        let tx2 = self.chan.sender();
+//        let shutdown_channel = SyncChannel::new(1);
+//        let shutdown_sender = shutdown_channel.sender();
+//        spawn_thread("status_hashes_comparer", || Connection::compare_status_hashes(script_hashes, query, tx2, shutdown_channel));
 
         if let Err(e) = self.handle_replies() {
             error!(
@@ -554,7 +568,7 @@ impl Connection {
         }
         debug!("[{}] shutting down connection", self.addr);
         let _ = self.stream.shutdown(Shutdown::Both);
-        let _ = shutdown_sender.send(Message::Done);
+//        let _ = shutdown_sender.send(Message::Done);
         if let Err(err) = reader_child.join().expect("receiver panicked") {
             error!("[{}] receiver failed: {}", self.addr, err);
         }
@@ -564,13 +578,13 @@ impl Connection {
 #[derive(Debug)]
 pub enum Message {
     Request(String),
-    ScriptHashChange(FullHash, Option<FullHash>),
+    ScriptHashChange(HashSet<FullHash>),
     ChainTipChange(HeaderEntry),
     Done,
 }
 
 pub enum Notification {
-    ScriptHashChange(FullHash, FullHash),
+    ScriptHashChange(HashSet<FullHash>),
     ChainTipChange(HeaderEntry),
     Exit,
 }
@@ -596,18 +610,15 @@ impl RPC {
             for msg in notification.receiver().iter() {
                 let mut senders = senders.lock().unwrap();
                 match msg {
-                    Notification::ScriptHashChange(hash, txid) => {
-                        let scripthash = Sha256dHash::from_slice(&hash[..]).expect("invalid scripthash");
-                        let _txid = Sha256dHash::from_slice(&txid[..]).expect("invalid txid");
-                        debug!("Notification::ScriptHashChange(scripthash = {}, txid = {}, senders.len() = {})", scripthash, _txid, senders.len());
+                    Notification::ScriptHashChange(scripthashes) => {
+                        debug!("Notification::ScriptHashChange, scripthashes.len() = {}, senders.len() = {}",scripthashes.len(), senders.len());
                         senders.retain(|sender| {
                             if let Err(e) =
-                                sender.send(Message::ScriptHashChange(hash, Some(txid)))
+                                sender.send(Message::ScriptHashChange(scripthashes.clone()))
                             {
-                                debug!("try_send Err on (scripthash = {}, txid = {}, error = {})", scripthash, _txid, e.to_string());
+                                debug!("try_send: Err = {}", e.to_string());
                                 false // drop disconnected clients
                             } else {
-                                debug!("Ok on (scripthash = {}, txid = {})", scripthash, _txid);
                                 true
                             }
                         })
@@ -718,91 +729,46 @@ impl RPC {
         }
     }
 
-    /// Attempt to notify scripthash subscriptions affected by transaction.
-    /// The `notified` hashset is an optimization to avoid double notifications.
-    /// When `notify_inputs` is set, we also notify scripthashes that are spent from.
-    fn try_notify_subscriptions_for_tx(
-        &self,
-        txid: &Txid,
-        block_height: Option<u32>,
-        notified: &mut HashSet<Txid>,
-        notify_inputs: bool,
-    ) -> Result<()> {
-        if notified.contains(txid) {
-            debug!("try_notify_subscriptions_for_tx NOTIFIED: txid = {}, block_height = {:?}", txid, block_height);
-            return Ok(());
-        }
-        notified.insert(txid.clone());
-
-        let txn = self.query.load_txn(txid, block_height)?;
-
-        let scripthashes: Vec<FullHash> = txn
-            .output
-            .iter()
-            .map(|o| compute_script_hash(&o.script_pubkey[..]))
-            .collect();
-
-        debug!("try_notify_subscriptions_for_tx: txid = {}, block_height = {:?}, scripthashes.len() = {}", txid, block_height, scripthashes.len());
-        for s in scripthashes {
-            if let Err(e) = self.notification.send(Notification::ScriptHashChange(s, txid.into_inner())) {
-                debug!("ScriptHash change notification failed {}", e);
-            }
-        }
-
-        if notify_inputs {
-            for txin in txn.input {
-                if txin.previous_output.is_null() {
-                    continue;
-                }
-                let id: &Txid = &txin.previous_output.txid;
-
-                if let Err(e) = self.try_notify_subscriptions_for_tx(id, None, notified, false) {
-                    debug!("failed to load input transaction {}: {}", id, e);
-                    continue;
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub fn notify_scripthash_subscriptions(
         &self,
-        changed_headers: &Vec<HeaderEntry>,
-        changed_mempool_txs: HashSet<Txid>,
+        headers_changed: &Vec<HeaderEntry>,
+        txs_changed: HashSet<Txid>,
     ) {
-        // Keep track of which txs have been notified, so we don't spend time
-        // notifying them twice.
-        let mut notified: HashSet<Txid> = HashSet::new();
+        let mut txn_done: HashSet<Txid> = HashSet::new();
+        let mut scripthashes: HashSet<FullHash> = HashSet::new();
 
-        for txid in changed_mempool_txs {
-            debug!("notify_scripthash_subscriptions: MEMPOOL txid = {}", txid);
-            if let Err(e) = self.try_notify_subscriptions_for_tx(&txid, None, &mut notified, true) {
-                debug!("Failed notifying subscriptions {}", e);
+        let mut insert_for_tx = |txid, blockhash| {
+            if !txn_done.insert(txid) {
+                return;
+            }
+            if let Ok(hashes) = self.get_scripthashes_effected_by_tx(&txid, blockhash) {
+                for h in hashes {
+                    scripthashes.insert(h);
+                }
+            } else {
+                trace!("failed to get effected scripthashes for tx {}", txid);
+            }
+        };
+
+        for header in headers_changed {
+            let blockhash = header.hash();
+            let txids = match self.query.getblocktxids(blockhash) {
+                Ok(txids) => txids,
+                Err(e) => {
+                    warn!("Failed to get blocktxids for {}: {}", blockhash, e);
+                    continue;
+                }
+            };
+            for txid in txids {
+                insert_for_tx(txid, Some(*blockhash));
             }
         }
+        for txid in txs_changed {
+            insert_for_tx(txid, None);
+        }
 
-        for header in changed_headers {
-            let blockhash = header.header().bitcoin_hash();
-            let blockheight = header.height();
-            let res = self.query.with_blocktxids(&blockhash, |txid| {
-                debug!("notify_scripthash_subscriptions: BLOCK txid = {}", txid);
-                if let Err(e) = self.try_notify_subscriptions_for_tx(
-                    &txid,
-                    Some(blockheight as u32),
-                    &mut notified,
-                    true,
-                ) {
-                    debug!("Failed notifying subscriptions {}", e);
-                    return;
-                }
-            });
-            if let Err(e) = res {
-                debug!(
-                    "Failed to fetch transactions for block {}: {}",
-                    blockhash,
-                    e
-                );
-            }
+        if let Err(e) = self.notification.send(Notification::ScriptHashChange(scripthashes)) {
+            trace!("Scripthash change notification failed: {}", e);
         }
     }
 
@@ -810,6 +776,27 @@ impl RPC {
         if let Err(e) = self.notification.send(Notification::ChainTipChange(header)) {
             trace!("Failed to notify about chaintip change {}", e);
         }
+    }
+
+    fn get_scripthashes_effected_by_tx(
+        &self,
+        txid: &Txid,
+        blockhash: Option<BlockHash>,
+    ) -> Result<Vec<FullHash>> {
+        let txn = self.query.load_txn_with_blockhashlookup(txid, blockhash)?;
+        let mut scripthashes = get_output_scripthash(&txn, None);
+
+        for txin in txn.input {
+            if txin.previous_output.is_null() {
+                continue;
+            }
+            let id: &Txid = &txin.previous_output.txid;
+            let n = txin.previous_output.vout as usize;
+
+            let txn = self.query.load_txn_with_blockhashlookup(&id, None)?;
+            scripthashes.extend(get_output_scripthash(&txn, Some(n)));
+        }
+        Ok(scripthashes)
     }
 }
 

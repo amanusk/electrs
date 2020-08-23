@@ -217,7 +217,8 @@ impl Query {
         for txid_prefix in prefixes {
             for tx_row in txrows_by_prefix(store, txid_prefix) {
                 let txid: Txid = deserialize(&tx_row.key.txid).unwrap();
-                let txn = self.load_txn(&txid, Some(tx_row.height))?;
+                let blockhash = self.lookup_confirmed_blockhash(&txid, Some(tx_row.height))?;
+                let txn = self.load_txn(&txid, blockhash)?;
                 txns.push(TxnHeight {
                     txn,
                     height: tx_row.height,
@@ -378,11 +379,33 @@ impl Query {
         Ok(blockhash)
     }
 
+    /// Load transaction by ID, attempt to lookup blockhash locally.
+    pub fn load_txn_with_blockhashlookup(
+        &self,
+        txid: &Txid,
+        blockhash: Option<BlockHash>,
+    ) -> Result<Transaction> {
+        if let Some(tx) = self.tracker.read().unwrap().get_txn(txid) {
+            return Ok(tx);
+        }
+        let hash: Option<BlockHash> = match blockhash {
+            Some(hash) => Some(hash),
+            None => match self.lookup_confirmed_blockhash(txid, None) {
+                Ok(hash) => hash,
+                Err(_) => None,
+            },
+        };
+        self.load_txn(txid, hash)
+    }
+
     // Internal API for transaction retrieval
-    pub fn load_txn(&self, txid: &Txid, block_height: Option<u32>) -> Result<Transaction> {
+    pub fn load_txn(
+        &self,
+        txid: &Txid,
+        blockhash: Option<BlockHash>,
+    ) -> Result<Transaction> {
         let _timer = self.duration.with_label_values(&["load_txn"]).start_timer();
-        self.tx_cache.get_or_else(&txid, || {
-            let blockhash = self.lookup_confirmed_blockhash(txid, block_height)?;
+        self.tx_cache.get_or_else(txid, || {
             let value: Value = self
                 .app
                 .daemon()
@@ -420,16 +443,8 @@ impl Query {
         Ok(last_header.chain_err(|| "no headers indexed")?.clone())
     }
 
-    pub fn with_blocktxids<F>(&self, blockhash: &BlockHash, mut callb: F) -> Result<()>
-    where
-        F: FnMut(&Txid),
-    {
-        let txids = self.app.daemon().getblocktxids(blockhash)?;
-        trace!("with_blocktxids: txids.len() = {:?}", txids.len());
-        for t in txids {
-            callb(&t)
-        }
-        Ok(())
+    pub fn getblocktxids(&self, blockhash: &BlockHash) -> Result<Vec<Txid>> {
+        self.app.daemon().getblocktxids(blockhash)
     }
 
     pub fn get_merkle_proof(
