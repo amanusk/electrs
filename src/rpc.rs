@@ -362,6 +362,7 @@ impl Connection {
                 debug!("on_scripthash_change PRE: scripthash = {}, old_statushash = {}, txid_opt = {:?}", scripthash, old_statushash, txid_opt);
             }
             None => {
+                debug!("on_scripthash_change DID NOT FIND: scripthash = {}, txid_opt = {:?}", scripthash, txid_opt);
                 return Ok(());
             }
         };
@@ -380,6 +381,7 @@ impl Connection {
         let status = status_result.unwrap();
         let new_statushash = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
         if new_statushash == *old_statushash {
+            debug!("on_scripthash_change SAME STATUS HASH: scripthash = {}, old_statushash = {}, txid_opt = {:?}", scripthash, old_statushash, txid_opt);
             return Ok(());
         }
         timer.observe_duration();
@@ -595,12 +597,17 @@ impl RPC {
                 let mut senders = senders.lock().unwrap();
                 match msg {
                     Notification::ScriptHashChange(hash, txid) => {
+                        let scripthash = Sha256dHash::from_slice(&hash[..]).expect("invalid scripthash");
+                        let _txid = Sha256dHash::from_slice(&txid[..]).expect("invalid txid");
+                        debug!("Notification::ScriptHashChange(scripthash = {}, txid = {})", scripthash, _txid);
                         senders.retain(|sender| {
-                            if let Err(TrySendError::Disconnected(_)) =
+                            if let Err(_) =
                                 sender.try_send(Message::ScriptHashChange(hash, Some(txid)))
                             {
+                                debug!("try_send Err on (scripthash = {}, txid = {})", scripthash, _txid);
                                 false // drop disconnected clients
                             } else {
+                                debug!("Ok on (scripthash = {}, txid = {})", scripthash, _txid);
                                 true
                             }
                         })
