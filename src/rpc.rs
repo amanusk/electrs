@@ -599,12 +599,12 @@ impl RPC {
                     Notification::ScriptHashChange(hash, txid) => {
                         let scripthash = Sha256dHash::from_slice(&hash[..]).expect("invalid scripthash");
                         let _txid = Sha256dHash::from_slice(&txid[..]).expect("invalid txid");
-                        debug!("Notification::ScriptHashChange(scripthash = {}, txid = {})", scripthash, _txid);
+                        debug!("Notification::ScriptHashChange(scripthash = {}, txid = {}, senders.len() = {})", scripthash, _txid, senders.len());
                         senders.retain(|sender| {
-                            if let Err(_) =
+                            if let Err(e) =
                                 sender.try_send(Message::ScriptHashChange(hash, Some(txid)))
                             {
-                                debug!("try_send Err on (scripthash = {}, txid = {})", scripthash, _txid);
+                                debug!("try_send Err on (scripthash = {}, txid = {}, error = {})", scripthash, _txid, e.to_string());
                                 false // drop disconnected clients
                             } else {
                                 debug!("Ok on (scripthash = {}, txid = {})", scripthash, _txid);
