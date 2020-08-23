@@ -10,7 +10,7 @@ use serde_json::{from_str, Value};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::mpsc::{Sender, SyncSender, TrySendError, TryRecvError};
+use std::sync::mpsc::{Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -104,7 +104,7 @@ impl Connection {
             script_hashes,
             stream,
             addr,
-            chan: SyncChannel::new(10),
+            chan: SyncChannel::new(100),
             stats,
             relayfee,
         }
@@ -356,6 +356,7 @@ impl Connection {
         let old_statushash;
         match self.script_hashes.get(&scripthash) {
             Some(statushash) => {
+                debug!("on_scripthash_change: scripthash = {}, statushash = {}, txid_opt = {:?}", scripthash, statushash, txid_opt);
                 old_statushash = statushash;
             }
             None => {
@@ -581,24 +582,28 @@ impl RPC {
                 let mut senders = senders.lock().unwrap();
                 match msg {
                     Notification::ScriptHashChange(hash, txid) => {
-                        for sender in senders.split_off(0) {
-                            if let Err(TrySendError::Disconnected(_)) =
-                                sender.try_send(Message::ScriptHashChange(hash, Some(txid)))
+                        senders.retain(|sender| {
+                            if let Err(e) =
+                                sender.send(Message::ScriptHashChange(hash, Some(txid)))
                             {
-                                continue;
+                                warn!("ScriptHashChange failed with error = {}", e);
+                                false // drop disconnected clients
+                            } else {
+                                true
                             }
-                            senders.push(sender);
-                        }
-                    }
+                        })
+                    },
                     Notification::ChainTipChange(hash) => {
-                        for sender in senders.split_off(0) {
-                            if let Err(TrySendError::Disconnected(_)) =
-                                sender.try_send(Message::ChainTipChange(hash.clone()))
+                        senders.retain(|sender| {
+                            if let Err(e) =
+                                sender.send(Message::ChainTipChange(hash.clone()))
                             {
-                                continue;
+                                warn!("ChainTipChange failed with error = {}", e);
+                                false // drop disconnected clients
+                            } else {
+                                true
                             }
-                            senders.push(sender);
-                        }
+                        })
                     }
                     Notification::Exit => acceptor.send(None).unwrap(), // mark acceptor as done
                 }
