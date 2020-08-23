@@ -359,7 +359,7 @@ impl Connection {
         match self.script_hashes.get(&scripthash) {
             Some(statushash) => {
                 old_statushash = statushash;
-                trace!("on_scripthash_change: scripthash = {}, old_statushash = {}", scripthash, old_statushash);
+                debug!("on_scripthash_change PRE: scripthash = {}, old_statushash = {}, txid_opt = {:?}", scripthash, old_statushash, txid_opt);
             }
             None => {
                 return Ok(());
@@ -384,11 +384,12 @@ impl Connection {
         }
         timer.observe_duration();
 
-        if txid_opt.is_some() {
-            debug!("ScriptHash change: scripthash = {}, tx_hash = {}, statushash = {}", scripthash, txid_opt.unwrap(), new_statushash);
-        } else {
-            debug!("ScriptHash change: scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
-        }
+//        if txid_opt.is_some() {
+//            debug!("ScriptHash change: scripthash = {}, tx_hash = {}, statushash = {}", scripthash, txid_opt.unwrap(), new_statushash);
+//        } else {
+//            debug!("ScriptHash change: scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
+//        }
+        debug!("on_scripthash_change POST: scripthash = {}, old_statushash = {}, new_statushash = {}, txid_opt = {:?}", scripthash, old_statushash, new_statushash, txid_opt);
 
         self.send_values(&vec![json!({
             "jsonrpc": "2.0",
@@ -721,6 +722,7 @@ impl RPC {
         notify_inputs: bool,
     ) -> Result<()> {
         if notified.contains(txid) {
+            debug!("try_notify_subscriptions_for_tx NOTIFIED: txid = {}, block_height = {:?}", txid, block_height);
             return Ok(());
         }
         notified.insert(txid.clone());
@@ -733,10 +735,10 @@ impl RPC {
             .map(|o| compute_script_hash(&o.script_pubkey[..]))
             .collect();
 
-        trace!("try_notify_subscriptions_for_tx: txid = {}, block_height = {:?}, scripthashes.len() = {}", txid, block_height, scripthashes.len());
+        debug!("try_notify_subscriptions_for_tx: txid = {}, block_height = {:?}, scripthashes.len() = {}", txid, block_height, scripthashes.len());
         for s in scripthashes {
             if let Err(e) = self.notification.send(Notification::ScriptHashChange(s, txid.into_inner())) {
-                trace!("ScriptHash change notification failed {}", e);
+                debug!("ScriptHash change notification failed {}", e);
             }
         }
 
@@ -748,7 +750,7 @@ impl RPC {
                 let id: &Txid = &txin.previous_output.txid;
 
                 if let Err(e) = self.try_notify_subscriptions_for_tx(id, None, notified, false) {
-                    trace!("failed to load input transaction {}: {}", id, e);
+                    debug!("failed to load input transaction {}: {}", id, e);
                     continue;
                 }
             }
@@ -766,8 +768,9 @@ impl RPC {
         let mut notified: HashSet<Txid> = HashSet::new();
 
         for txid in changed_mempool_txs {
+            debug!("notify_scripthash_subscriptions: MEMPOOL txid = {}", txid);
             if let Err(e) = self.try_notify_subscriptions_for_tx(&txid, None, &mut notified, true) {
-                trace!("Failed notifying subscriptions {}", e);
+                debug!("Failed notifying subscriptions {}", e);
             }
         }
 
@@ -775,18 +778,19 @@ impl RPC {
             let blockhash = header.header().bitcoin_hash();
             let blockheight = header.height();
             let res = self.query.with_blocktxids(&blockhash, |txid| {
+                debug!("notify_scripthash_subscriptions: BLOCK txid = {}", txid);
                 if let Err(e) = self.try_notify_subscriptions_for_tx(
                     &txid,
                     Some(blockheight as u32),
                     &mut notified,
                     true,
                 ) {
-                    trace!("Failed notifying subscriptions {}", e);
+                    debug!("Failed notifying subscriptions {}", e);
                     return;
                 }
             });
             if let Err(e) = res {
-                trace!(
+                debug!(
                     "Failed to fetch transactions for block {}: {}",
                     blockhash,
                     e
