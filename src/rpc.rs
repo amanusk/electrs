@@ -114,7 +114,7 @@ impl Connection {
             script_hashes,
             stream,
             addr,
-            chan: SyncChannel::new(100),
+            chan: SyncChannel::new(10),
             stats,
             relayfee,
         }
