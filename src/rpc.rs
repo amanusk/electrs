@@ -727,7 +727,7 @@ impl RPC {
                     scripthashes.insert(h, txid);
                 }
             } else {
-                trace!("failed to get effected scripthashes for tx {}", txid);
+                warn!("failed to get effected scripthashes for tx {}", txid);
             }
         };
 
@@ -750,14 +750,14 @@ impl RPC {
 
         for (scripthash, txid) in scripthashes.drain() {
             if let Err(e) = self.notification.send(Notification::ScriptHashChange(scripthash, txid.into_inner())) {
-                trace!("Scripthash change notification failed: {}", e);
+                warn!("Scripthash change notification failed: {}", e);
             }
         }
     }
 
     pub fn notify_subscriptions_chaintip(&self, header: HeaderEntry) {
         if let Err(e) = self.notification.send(Notification::ChainTipChange(header)) {
-            trace!("Failed to notify about chaintip change {}", e);
+            warn!("Failed to notify about chaintip change {}", e);
         }
     }
 
