@@ -366,7 +366,11 @@ impl Connection {
         let old_statushash;
         match self.script_hashes.get(&scripthash) {
             Some(statushash) => {
-                debug!("on_scripthash_change: scripthash = {}, statushash = {}, txid_opt = {:?}", scripthash, statushash, txid_opt);
+                debug!("on_scripthash_change: scripthash = {}, statushash = {}{}",
+                    scripthash,
+                    statushash,
+                    txid_opt.map_or("".to_string(), |txid| format!(", txid = {}", txid))
+                );
                 old_statushash = statushash;
             }
             None => {
@@ -387,11 +391,12 @@ impl Connection {
         }
         timer.observe_duration();
 
-        if txid_opt.is_some() {
-            debug!("ScriptHash change: scripthash = {}, tx_hash = {}, statushash = {}", scripthash, txid_opt.unwrap(), new_statushash);
-        } else {
-            debug!("ScriptHash change: scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
-        }
+        debug!("ScriptHash change: scripthash = {}, old_statushash = {}, new_statushash = {}{}",
+            scripthash,
+            old_statushash,
+            new_statushash,
+            txid_opt.map_or("".to_string(), |txid| format!(", txid = {}", txid))
+        );
 
         self.send_values(&vec![json!({
             "jsonrpc": "2.0",
