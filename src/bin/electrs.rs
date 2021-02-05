@@ -7,7 +7,8 @@ extern crate log;
 use error_chain::ChainedError;
 use std::process;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use std::collections::HashMap;
 
 use electrs::{
     app::App,
@@ -22,6 +23,7 @@ use electrs::{
     rpc::RPC,
     signal::Waiter,
     store::{full_compaction, is_fully_compacted, DBStore},
+    subscriptions::SubscriptionsManager,
 };
 
 // If we see this more new blocks than this, don't look for scripthash
@@ -72,6 +74,11 @@ fn run_server(config: &Config) -> Result<()> {
 
     let mut server = None; // Electrum RPC server
     loop {
+        debug!("------ scanning DB ------");
+        let now = Instant::now();
+        let script_hashes = SubscriptionsManager::get_script_hashes()
+            .unwrap_or(HashMap::new());
+        debug!("script_hashes.len() = {}, took {} milliseconds", script_hashes.len(), now.elapsed().as_millis());
         debug!("------ update ------");
         let (changed_headers, new_tip) = app.update(&signal)?;
         if new_tip.is_some() {
@@ -81,7 +88,7 @@ fn run_server(config: &Config) -> Result<()> {
         let changed_mempool_txs = query.update_mempool()?;
         debug!("changed_mempool_txs.len() = {}", changed_mempool_txs.len());
         let rpc = server
-            .get_or_insert_with(|| RPC::start(config.electrum_rpc_addr, query.clone(), &metrics, relayfee));
+            .get_or_insert_with(|| RPC::start(config.electrum_rpc_addr, query.clone(), script_hashes, &metrics, relayfee));
         if changed_headers.len() <= MAX_SCRIPTHASH_BLOCKS {
             rpc.notify_scripthash_subscriptions(&changed_headers, changed_mempool_txs);
         }

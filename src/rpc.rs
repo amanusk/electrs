@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc::{Sender, SyncSender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Instant;
 
@@ -20,7 +20,6 @@ use crate::metrics::{Gauge, HistogramOpts, HistogramVec, MetricOpts, Metrics};
 use crate::query::{Query, Status};
 use crate::util::FullHash;
 use crate::util::{spawn_thread, Channel, HeaderEntry, SyncChannel};
-use crate::subscriptions::SubscriptionsManager;
 
 const ELECTRS_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: &str = "1.4";
@@ -88,7 +87,7 @@ fn get_output_scripthash(txn: &Transaction, n: Option<usize>) -> Vec<FullHash> {
 struct Connection {
     query: Arc<Query>,
     last_header_entry: Option<HeaderEntry>,
-    script_hashes: HashMap<Sha256dHash, Value>, // ScriptHash -> StatusHash
+    script_hashes: RwLock<HashMap<Sha256dHash, Value>>, // ScriptHash -> StatusHash
     stream: TcpStream,
     addr: SocketAddr,
     chan: SyncChannel<Message>,
@@ -99,15 +98,12 @@ struct Connection {
 impl Connection {
     pub fn new(
         query: Arc<Query>,
+        script_hashes: RwLock<HashMap<Sha256dHash, Value>>,
         stream: TcpStream,
         addr: SocketAddr,
         stats: Arc<Stats>,
         relayfee: f64,
     ) -> Connection {
-        let now = Instant::now();
-        let script_hashes = SubscriptionsManager::get_script_hashes()
-            .unwrap_or(HashMap::new());
-        debug!("script_hashes.len() = {}, took {} milliseconds", script_hashes.len(), now.elapsed().as_millis());
         Connection {
             query,
             last_header_entry: None, // disable header subscription for now
@@ -227,10 +223,10 @@ impl Connection {
         debug!("blockchain_scripthash_subscribe: script_hash = {}", script_hash);
         let status = self.query.status(&script_hash[..])?;
         let result = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
-        self.script_hashes.insert(script_hash, result.clone());
+        self.script_hashes.get_mut().unwrap().insert(script_hash, result.clone());
         self.stats
             .subscriptions
-            .set(self.script_hashes.len() as i64);
+            .set(self.script_hashes.read().unwrap().len() as i64);
         Ok(result)
     }
 
@@ -364,7 +360,7 @@ impl Connection {
         let txid_opt = txid_opt.map(|txid| Sha256dHash::from_slice(&txid[..]).expect("invalid txid"));
 
         let old_statushash;
-        match self.script_hashes.get(&scripthash) {
+        match self.script_hashes.get_mut().unwrap().get(&scripthash) {
             Some(statushash) => {
                 debug!("on_scripthash_change: scripthash = {}, statushash = {}{}",
                     scripthash,
@@ -407,7 +403,7 @@ impl Connection {
             "jsonrpc": "2.0",
             "method": "blockchain.scripthash.subscribe",
             "params": [scripthash.to_hex(), new_statushash]})])?;
-        self.script_hashes.insert(scripthash, new_statushash);
+        self.script_hashes.get_mut().unwrap().insert(scripthash, new_statushash);
         Ok(())
     }
 
@@ -548,12 +544,11 @@ impl Connection {
         let tx = self.chan.sender();
         let reader_child = spawn_thread("reader", || Connection::handle_requests(reader, tx));
 
-        let script_hashes = self.script_hashes.clone();
         let query = Arc::clone(&self.query);
         let tx2 = self.chan.sender();
         let shutdown_channel = SyncChannel::new(1);
         let shutdown_sender = shutdown_channel.sender();
-        spawn_thread("status_hashes_comparer", || Connection::compare_status_hashes(script_hashes, query, tx2, shutdown_channel));
+//        spawn_thread("status_hashes_comparer", || Connection::compare_status_hashes(script_hashes, query, tx2, shutdown_channel));
 
         if let Err(e) = self.handle_replies() {
             error!(
@@ -657,7 +652,7 @@ impl RPC {
         chan
     }
 
-    pub fn start(addr: SocketAddr, query: Arc<Query>, metrics: &Metrics, relayfee: f64) -> RPC {
+    pub fn start(addr: SocketAddr, query: Arc<Query>, script_hashes: HashMap<Sha256dHash, Value>, metrics: &Metrics, relayfee: f64) -> RPC {
         let stats = Arc::new(Stats {
             latency: metrics.histogram_vec(
                 HistogramOpts::new("electrs_electrum_rpc", "Electrum RPC latency (seconds)"),
@@ -688,10 +683,11 @@ impl RPC {
                     let senders = Arc::clone(&senders);
                     let stats = Arc::clone(&stats);
                     let garbage_sender = garbage_sender.clone();
+                    let script_hashes = RwLock::from(script_hashes.clone());
 
                     let spawned = spawn_thread("peer", move || {
                         info!("[{}] connected peer", addr);
-                        let conn = Connection::new(query, stream, addr, stats, relayfee);
+                        let conn = Connection::new(query, script_hashes, stream, addr, stats, relayfee);
                         senders.lock().unwrap().push(conn.chan.sender());
                         conn.run();
                         info!("[{}] disconnected peer", addr);
