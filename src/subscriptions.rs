@@ -57,7 +57,7 @@ impl SubscriptionsManager {
                                         None => Value::Null,
                                     };
 
-                                    debug!("subscribing script_hash = {:?}, status_hash = {:?}", script_hash, status_hash);
+//                                    debug!("subscribing script_hash = {:?}, status_hash = {:?}", script_hash, status_hash);
                                     script_hashes.insert(script_hash, status_hash);
                                 }
                             }
