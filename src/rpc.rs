@@ -761,7 +761,7 @@ impl RPC {
 
 
         for (i, txid) in txs_changed.iter().enumerate() {
-            if i % 1000 == 0 {
+            if i > 0 && i % 1000 == 0 {
                 debug!("notify_scripthash_subscriptions: {} out of {}", i, txs_changed.len());
             }
             insert_for_tx(*txid, None);
