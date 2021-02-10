@@ -758,8 +758,13 @@ impl RPC {
                 insert_for_tx(txid, Some(*blockhash));
             }
         }
-        for txid in txs_changed {
-            insert_for_tx(txid, None);
+
+
+        for (i, txid) in txs_changed.iter().enumerate() {
+            if i % 1000 == 0 {
+                debug!("notify_scripthash_subscriptions: {} out of {}", i, txs_changed.len());
+            }
+            insert_for_tx(*txid, None);
         }
 
         for (scripthash, txid) in scripthashes.drain() {
