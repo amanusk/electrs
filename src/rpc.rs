@@ -87,7 +87,7 @@ fn get_output_scripthash(txn: &Transaction, n: Option<usize>) -> Vec<FullHash> {
 struct Connection {
     query: Arc<Query>,
     last_header_entry: Option<HeaderEntry>,
-    script_hashes: RwLock<HashMap<Sha256dHash, Value>>, // ScriptHash -> StatusHash
+    script_hashes: HashMap<Sha256dHash, Value>, // ScriptHash -> StatusHash
     stream: TcpStream,
     addr: SocketAddr,
     chan: SyncChannel<Message>,
@@ -98,7 +98,7 @@ struct Connection {
 impl Connection {
     pub fn new(
         query: Arc<Query>,
-        script_hashes: RwLock<HashMap<Sha256dHash, Value>>,
+        script_hashes: HashMap<Sha256dHash, Value>,
         stream: TcpStream,
         addr: SocketAddr,
         stats: Arc<Stats>,
@@ -223,10 +223,10 @@ impl Connection {
         debug!("blockchain_scripthash_subscribe: script_hash = {}", script_hash);
         let status = self.query.status(&script_hash[..])?;
         let result = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
-        self.script_hashes.get_mut().unwrap().insert(script_hash, result.clone());
+        self.script_hashes.insert(script_hash, result.clone());
         self.stats
             .subscriptions
-            .set(self.script_hashes.read().unwrap().len() as i64);
+            .set(self.script_hashes.len() as i64);
         Ok(result)
     }
 
@@ -360,7 +360,7 @@ impl Connection {
         let txid_opt = txid_opt.map(|txid| Sha256dHash::from_slice(&txid[..]).expect("invalid txid"));
 
         let old_statushash;
-        match self.script_hashes.get_mut().unwrap().get(&scripthash) {
+        match self.script_hashes.get(&scripthash) {
             Some(statushash) => {
                 debug!("on_scripthash_change: scripthash = {}, statushash = {}{}",
                     scripthash,
@@ -403,7 +403,7 @@ impl Connection {
             "jsonrpc": "2.0",
             "method": "blockchain.scripthash.subscribe",
             "params": [scripthash.to_hex(), new_statushash]})])?;
-        self.script_hashes.get_mut().unwrap().insert(scripthash, new_statushash);
+        self.script_hashes.insert(scripthash, new_statushash);
         Ok(())
     }
 
@@ -548,7 +548,8 @@ impl Connection {
         let tx2 = self.chan.sender();
         let shutdown_channel = SyncChannel::new(1);
         let shutdown_sender = shutdown_channel.sender();
-//        spawn_thread("status_hashes_comparer", || Connection::compare_status_hashes(script_hashes, query, tx2, shutdown_channel));
+        let script_hashes = self.script_hashes.clone();
+        spawn_thread("status_hashes_comparer", || Connection::compare_status_hashes(script_hashes, query, tx2, shutdown_channel));
 
         if let Err(e) = self.handle_replies() {
             error!(
@@ -687,6 +688,8 @@ impl RPC {
 
                     let spawned = spawn_thread("peer", move || {
                         info!("[{}] connected peer", addr);
+                        let script_hashes = script_hashes.into_inner().unwrap();
+                        info!("script_hashes.len() = {}", script_hashes.len());
                         let conn = Connection::new(query, script_hashes, stream, addr, stats, relayfee);
                         senders.lock().unwrap().push(conn.chan.sender());
                         conn.run();
