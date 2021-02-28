@@ -22,6 +22,8 @@ use electrs::{
     rpc::RPC,
     signal::Waiter,
     store::{full_compaction, is_fully_compacted, DBStore},
+    subscriptions::SubscriptionsManager,
+    util::{spawn_thread}
 };
 
 // If we see this more new blocks than this, don't look for scripthash
@@ -69,6 +71,8 @@ fn run_server(config: &Config) -> Result<()> {
     let query = Query::new(app.clone(), &metrics, tx_cache, config.txid_limit, config.txid_warning_limit);
     let relayfee = query.get_relayfee()?;
     debug!("relayfee: {} BTC", relayfee);
+
+    spawn_thread("script_hash_subscription_poller", || SubscriptionsManager::subscribe_script_hash_sqs_poller());
 
     let mut server = None; // Electrum RPC server
     loop {
