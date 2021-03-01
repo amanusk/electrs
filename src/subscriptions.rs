@@ -54,8 +54,6 @@ impl SubscriptionsHandler {
     ) -> SubscriptionsHandler {
         let tx_notification_url = SubscriptionsHandler::get_sqs_queue_for_txs_notifications(env);
 
-        println!("Got tx_notification_url: {}", tx_notification_url);
-
         SubscriptionsHandler {
             query,
             script_hashes,
@@ -79,8 +77,6 @@ impl SubscriptionsHandler {
             .sync()
             .expect("Get queue by URL request failed");
 
-        println!("Got GetQueueURL txs_notif response: {:?}", response);
-
         response.queue_url
             .expect("Queue url should be available from list queues")
     }
@@ -91,7 +87,7 @@ impl SubscriptionsHandler {
         let status = self.query.status(&script_hash[..])?;
         let result = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
         self.script_hashes.insert(script_hash, result.clone());
-        debug!("blockchain_scripthash_subscribe: script_hash = {}", script_hash);
+        debug!("Subscribed script_hash: {}", script_hash);
         Ok(())
     }
 
@@ -102,7 +98,7 @@ impl SubscriptionsHandler {
         let old_statushash;
         match self.script_hashes.get(&scripthash) {
             Some(statushash) => {
-                debug!("on_scripthash_change: scripthash = {}, statushash = {}{}",
+                debug!("notify_scripthash_subscriptions: scripthash = {}, statushash = {}{}",
                        scripthash,
                        statushash,
                        txid_opt.map_or("".to_string(), |txid| format!(", txid = {}", txid))
@@ -116,7 +112,7 @@ impl SubscriptionsHandler {
 
         let status_result = self.query.status(&scripthash[..]);
         if status_result.is_err() {
-            warn!("on_scripthash_change error - {}", status_result.err().unwrap());
+            warn!("notify_scripthash_subscriptions error - {}", status_result.err().unwrap());
             return Ok(());
         }
         let status = status_result.unwrap();
@@ -125,7 +121,7 @@ impl SubscriptionsHandler {
             return Ok(());
         }
 
-        debug!("ScriptHash change: scripthash = {}, old_statushash = {}, new_statushash = {}{}",
+        debug!("notify_scripthash_subscriptions: scripthash = {}, old_statushash = {}, new_statushash = {}{}",
                scripthash,
                old_statushash,
                new_statushash,
@@ -136,8 +132,6 @@ impl SubscriptionsHandler {
             "script_hash": scripthash,
             "status_hash": new_statushash
         }).to_string();
-
-        debug!("notification string {}", msg_str);
 
         let send_msg_request = SendMessageRequest {
             message_body: msg_str.clone(),
@@ -422,13 +416,6 @@ impl SubscriptionsManager {
                 let response = sqs.receive_message(receive_request.clone()).sync();
                 match response.expect("Expected to have a receive message response").messages {
                     Some(messages) => for msg in messages {
-                        debug!(
-                            "Received message '{}' with id {}",
-                            msg.body.clone().unwrap(),
-                            msg.message_id.clone().unwrap()
-                        );
-                        debug!("Receipt handle is {:?}", msg.receipt_handle);
-
                         let message_body: std::result::Result<SNSMessage, serde_json::Error> =  serde_json::from_str(msg.body.unwrap().as_str());
 
                         if message_body.is_err() {
