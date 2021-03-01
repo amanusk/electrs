@@ -195,6 +195,20 @@ impl SubscriptionsHandler {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+#[allow(non_snake_case)]
+struct SNSMessage {
+    Type: String,
+    MessageId: String,
+    TopicArn: String,
+    Message: String,
+    Timestamp: String,
+    SignatureVersion: String,
+    Signature: String,
+    SigningCertURL: String,
+    UnsubscribeURL: String,
+}
+
 pub struct SubscriptionsManager {
     query: Arc<Query>,
     notifications_sender: SyncSender<SubscriptionMessage>,
@@ -404,10 +418,8 @@ impl SubscriptionsManager {
         spawn_thread("sqs_poller", move || {
             loop {
                 let response = sqs.receive_message(receive_request.clone()).sync();
-                for msg in response
-                    .expect("Expected to have a receive message response")
-                    .messages
-                    {
+                match response.expect("Expected to have a receive message response").messages {
+                    Some(messages) => for msg in messages {
                         println!(
                             "Received message '{}' with id {}",
                             msg.body.clone().unwrap(),
@@ -415,8 +427,15 @@ impl SubscriptionsManager {
                         );
                         println!("Receipt handle is {:?}", msg.receipt_handle);
 
-                        let message_body = serde_json::from_str(msg.body.unwrap().as_str());
-                        let script_hash_to_sub = message_body["Message"];
+                        let message_body: std::result::Result<SNSMessage, serde_json::Error> =  serde_json::from_str(msg.body.unwrap().as_str());
+
+                        if message_body.is_err() {
+                            continue;
+                        }
+
+                        let script_hash_to_sub = message_body.unwrap().Message;
+
+                        println!("Sending subscription message for scripthash: {}", script_hash_to_sub);
 
                         sender.send(SubscriptionMessage::NewScriptHash(script_hash_to_sub));
 
@@ -431,7 +450,9 @@ impl SubscriptionsManager {
                             ),
                             Err(e) => warn!("Couldn't delete message: {:?}", e),
                         }
-                    }
+                    },
+                    None => {},
+                };
             }
         });
 
