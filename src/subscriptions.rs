@@ -88,10 +88,10 @@ impl SubscriptionsHandler {
     fn subscribe_script_hash(&mut self, script_hash: String) -> Result<()> {
         let script_hash = Sha256dHash::from_hex(script_hash.as_str()).chain_err(|| "bad script_hash")?;
 
-        debug!("blockchain_scripthash_subscribe: script_hash = {}", script_hash);
         let status = self.query.status(&script_hash[..])?;
         let result = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
         self.script_hashes.insert(script_hash, result.clone());
+        debug!("blockchain_scripthash_subscribe: script_hash = {}", script_hash);
         Ok(())
     }
 
@@ -146,7 +146,7 @@ impl SubscriptionsHandler {
         let sqs = SqsClient::new(Region::UsWest2);
 
         let response = sqs.send_message(send_msg_request).sync();
-        println!(
+        debug!(
             "Sent message with body '{}' and created message_id {}",
             msg_str,
             response.unwrap().message_id.unwrap()
@@ -159,7 +159,6 @@ impl SubscriptionsHandler {
     pub fn handle_replies(&mut self) -> Result<()> {
         loop {
             let msg = self.chan.receiver().recv().chain_err(|| "channel closed")?;
-            println!("Handle reply msg: {:?}", msg);
             match msg {
                 SubscriptionMessage::NewScriptHash(script_hash) => self.subscribe_script_hash(script_hash)?,
                 SubscriptionMessage::ScriptHashChange(hash, txid) => self.notify_scripthash_subscriptions(hash, txid)?,
@@ -265,7 +264,7 @@ impl SubscriptionsManager {
                                         None => Value::Null,
                                     };
 
-                                    debug!("subscribing script_hash = {:?}, status_hash = {:?}", script_hash, status_hash);
+//                                    debug!("subscribing script_hash = {:?}, status_hash = {:?}", script_hash, status_hash);
                                     script_hashes.insert(script_hash, status_hash);
                                 }
                             }
@@ -320,22 +319,22 @@ impl SubscriptionsManager {
         let mut res = SubscriptionsManager::get_az();
         let az = res.split_off(res.len() - 2).to_uppercase();
 
-        println!("Create SubscriptionsHandler");
+        debug!("Create SubscriptionsHandler");
         let mut subs_handler = SubscriptionsHandler::new(query.clone(), script_hashes.clone(), env.clone());
 
         let subscribe_sender = subs_handler.chan.sender();
         SubscriptionsManager::start_subscribe_scripthash_sqs_poller(subscribe_sender, env, az);
-        println!("Started sqs poller for subscribes");
+        debug!("Started sqs poller for subscribes");
 
         let status_hash_sender = subs_handler.chan.sender();
         let status_hash_query = Arc::clone(&query);
         spawn_thread("status_hashes_comparer", move || SubscriptionsHandler::compare_status_hashes(script_hashes.clone(), status_hash_query, status_hash_sender));
-        println!("Started compare status hashes");
+        debug!("Started compare status hashes");
 
         let notifications_sender = subs_handler.chan.sender();
 
         spawn_thread("subs_handler", move || subs_handler.handle_replies());
-        println!("Started SubscriptionsHandler handle_replies");
+        debug!("Started SubscriptionsHandler handle_replies");
 
         SubscriptionsManager {
             query: query.clone(),
@@ -401,13 +400,13 @@ impl SubscriptionsManager {
             .sync()
             .expect("Get queue by URL request failed");
 
-        println!("SQS Poller get queue response {:?}", response);
+        debug!("SQS Poller get queue response {:?}", response);
 
         let queue_url = response
             .queue_url
             .expect("Queue url should be available from list queues");
 
-        println!("SQS Poller queue url {}", queue_url.clone());
+        debug!("SQS Poller queue url {}", queue_url.clone());
 
         let receive_request = ReceiveMessageRequest {
             queue_url: queue_url.clone(),
@@ -420,12 +419,12 @@ impl SubscriptionsManager {
                 let response = sqs.receive_message(receive_request.clone()).sync();
                 match response.expect("Expected to have a receive message response").messages {
                     Some(messages) => for msg in messages {
-                        println!(
+                        debug!(
                             "Received message '{}' with id {}",
                             msg.body.clone().unwrap(),
                             msg.message_id.clone().unwrap()
                         );
-                        println!("Receipt handle is {:?}", msg.receipt_handle);
+                        debug!("Receipt handle is {:?}", msg.receipt_handle);
 
                         let message_body: std::result::Result<SNSMessage, serde_json::Error> =  serde_json::from_str(msg.body.unwrap().as_str());
 
@@ -435,7 +434,7 @@ impl SubscriptionsManager {
 
                         let script_hash_to_sub = message_body.unwrap().Message;
 
-                        println!("Sending subscription message for scripthash: {}", script_hash_to_sub);
+                        debug!("Sending subscription message for scripthash: {}", script_hash_to_sub);
 
                         sender.send(SubscriptionMessage::NewScriptHash(script_hash_to_sub));
 
@@ -444,7 +443,7 @@ impl SubscriptionsManager {
                             receipt_handle: msg.receipt_handle.clone().unwrap(),
                         };
                         match sqs.delete_message(delete_message_request).sync() {
-                            Ok(_) => println!(
+                            Ok(_) => debug!(
                                 "Deleted message via receipt handle {:?}",
                                 msg.receipt_handle
                             ),
