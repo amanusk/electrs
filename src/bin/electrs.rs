@@ -23,7 +23,6 @@ use electrs::{
     signal::Waiter,
     store::{full_compaction, is_fully_compacted, DBStore},
     subscriptions::SubscriptionsManager,
-    util::{spawn_thread}
 };
 
 // If we see this more new blocks than this, don't look for scripthash
@@ -72,8 +71,7 @@ fn run_server(config: &Config) -> Result<()> {
     let relayfee = query.get_relayfee()?;
     debug!("relayfee: {} BTC", relayfee);
 
-    spawn_thread("script_hash_subscription_poller", || SubscriptionsManager::subscribe_script_hash_sqs_poller());
-
+    let mut subs = None; // Electrum subscriptions and notifications manager
     let mut server = None; // Electrum RPC server
     loop {
         debug!("------ update ------");
@@ -84,12 +82,15 @@ fn run_server(config: &Config) -> Result<()> {
         }
         let changed_mempool_txs = query.update_mempool()?;
         debug!("changed_mempool_txs.len() = {}", changed_mempool_txs.len());
-        let rpc = server
-            .get_or_insert_with(|| RPC::start(config.electrum_rpc_addr, query.clone(), &metrics, relayfee));
+
+        let subs_manager = subs
+            .get_or_insert_with(|| SubscriptionsManager::start(query.clone()));
         if changed_headers.len() <= MAX_SCRIPTHASH_BLOCKS {
-            rpc.notify_scripthash_subscriptions(&changed_headers, changed_mempool_txs);
+            subs_manager.on_scripthash_change(&changed_headers, changed_mempool_txs);
         }
 
+        let rpc = server
+            .get_or_insert_with(|| RPC::start(config.electrum_rpc_addr, query.clone(), &metrics, relayfee));
         if let Some(header) = new_tip {
             rpc.notify_subscriptions_chaintip(header);
         }

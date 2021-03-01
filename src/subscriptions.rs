@@ -1,21 +1,214 @@
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin_hashes::{sha256d::Hash as Sha256dHash, Hash};
 use bitcoin_hashes::hex::FromHex;
+use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::hash_types::{BlockHash, Txid};
 
 use rusoto_core::Region;
 use rusoto_dynamodb::{DynamoDb, DynamoDbClient, ScanInput};
-use rusoto_sqs::{ReceiveMessageRequest, Sqs, SqsClient, DeleteMessageRequest, GetQueueUrlRequest, GetQueueUrlResult};
+use rusoto_sqs::{ReceiveMessageRequest, Sqs, SqsClient, DeleteMessageRequest, GetQueueUrlRequest, GetQueueUrlResult, SendMessageRequest};
 
 use std::default::Default;
 use std::env;
 use std::format;
+use std::sync::{Arc};
+use std::sync::mpsc::{SyncSender};
+use std::collections::{HashMap, HashSet};
+use serde_json::Value;
+use std::time::Instant;
 
 use crate::errors::*;
-use std::collections::HashMap;
-use serde_json::Value;
+use crate::index::compute_script_hash;
+use crate::query::{Query};
+use crate::util::{spawn_thread, SyncChannel, HeaderEntry, FullHash};
 
-pub struct SubscriptionsManager {}
+fn get_output_scripthash(txn: &Transaction, n: Option<usize>) -> Vec<FullHash> {
+    if let Some(out) = n {
+        vec![compute_script_hash(&txn.output[out].script_pubkey[..])]
+    } else {
+        txn.output
+            .iter()
+            .map(|o| compute_script_hash(&o.script_pubkey[..]))
+            .collect()
+    }
+}
+
+#[derive(Debug)]
+pub enum SubscriptionMessage {
+    NewScriptHash(String),
+    ScriptHashChange(FullHash, Option<FullHash>),
+    Done,
+}
+
+struct SubscriptionsHandler {
+    query: Arc<Query>,
+    script_hashes: HashMap<Sha256dHash, Value>, // ScriptHash -> StatusHash
+    chan: SyncChannel<SubscriptionMessage>,
+    tx_notification_url: String,
+}
+
+impl SubscriptionsHandler {
+    pub fn new(
+        query: Arc<Query>,
+        script_hashes: HashMap<Sha256dHash, Value>,
+        env: String
+    ) -> SubscriptionsHandler {
+        let tx_notification_url = SubscriptionsHandler::get_sqs_queue_for_txs_notifications(env);
+
+        println!("Got tx_notification_url: {}", tx_notification_url);
+
+        SubscriptionsHandler {
+            query,
+            script_hashes,
+            chan: SyncChannel::new(100),
+            tx_notification_url
+        }
+    }
+
+    fn get_sqs_queue_for_txs_notifications(env: String) -> String {
+        let sqs = SqsClient::new(Region::UsWest2);
+
+        let queue_name = format!("Bitcoin_Tx_Event_{}.fifo", env);
+
+        let get_queue_by_name_request = GetQueueUrlRequest {
+            queue_name: queue_name.clone(),
+            ..Default::default()
+        };
+
+        let response: GetQueueUrlResult = sqs
+            .get_queue_url(get_queue_by_name_request)
+            .sync()
+            .expect("Get queue by URL request failed");
+
+        println!("Got GetQueueURL txs_notif response: {:?}", response);
+
+        response.queue_url
+            .expect("Queue url should be available from list queues")
+    }
+
+    fn subscribe_script_hash(&mut self, script_hash: String) -> Result<()> {
+        let script_hash = Sha256dHash::from_hex(script_hash.as_str()).chain_err(|| "bad script_hash")?;
+
+        debug!("blockchain_scripthash_subscribe: script_hash = {}", script_hash);
+        let status = self.query.status(&script_hash[..])?;
+        let result = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
+        self.script_hashes.insert(script_hash, result.clone());
+        Ok(())
+    }
+
+    fn notify_scripthash_subscriptions(&mut self, scripthash: FullHash, txid_opt: Option<FullHash>) -> Result<()> {
+        let scripthash = Sha256dHash::from_slice(&scripthash[..]).expect("invalid scripthash");
+        let txid_opt = txid_opt.map(|txid| Sha256dHash::from_slice(&txid[..]).expect("invalid txid"));
+
+        let old_statushash;
+        match self.script_hashes.get(&scripthash) {
+            Some(statushash) => {
+                debug!("on_scripthash_change: scripthash = {}, statushash = {}{}",
+                       scripthash,
+                       statushash,
+                       txid_opt.map_or("".to_string(), |txid| format!(", txid = {}", txid))
+                );
+                old_statushash = statushash;
+            }
+            None => {
+                return Ok(());
+            }
+        };
+
+        let status_result = self.query.status(&scripthash[..]);
+        if status_result.is_err() {
+            warn!("on_scripthash_change error - {}", status_result.err().unwrap());
+            return Ok(());
+        }
+        let status = status_result.unwrap();
+        let new_statushash = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
+        if new_statushash == *old_statushash {
+            return Ok(());
+        }
+
+        debug!("ScriptHash change: scripthash = {}, old_statushash = {}, new_statushash = {}{}",
+               scripthash,
+               old_statushash,
+               new_statushash,
+               txid_opt.map_or("".to_string(), |txid| format!(", txid = {}", txid))
+        );
+
+        let msg_str = json!({
+            "script_hash": scripthash,
+            "status_hash": new_statushash
+        }).to_string();
+
+        let send_msg_request = SendMessageRequest {
+            message_body: msg_str.clone(),
+            queue_url: self.tx_notification_url.clone(),
+            ..Default::default()
+        };
+
+        let sqs = SqsClient::new(Region::UsWest2);
+
+        let response = sqs.send_message(send_msg_request).sync();
+        println!(
+            "Sent message with body '{}' and created message_id {}",
+            msg_str,
+            response.unwrap().message_id.unwrap()
+        );
+
+        self.script_hashes.insert(scripthash, new_statushash);
+        Ok(())
+    }
+
+    pub fn handle_replies(&mut self) -> Result<()> {
+        loop {
+            let msg = self.chan.receiver().recv().chain_err(|| "channel closed")?;
+            println!("Handle reply msg: {:?}", msg);
+            match msg {
+                SubscriptionMessage::NewScriptHash(script_hash) => self.subscribe_script_hash(script_hash)?,
+                SubscriptionMessage::ScriptHashChange(hash, txid) => self.notify_scripthash_subscriptions(hash, txid)?,
+                SubscriptionMessage::Done => return Ok(()),
+            }
+        }
+    }
+
+    fn compare_status_hashes(script_hashes: HashMap<Sha256dHash, Value>, query: Arc<Query>, tx: SyncSender<SubscriptionMessage>) -> Result<()> {
+        debug!("compare_status_hashes: script_hashes.len() = {}, starting", script_hashes.len());
+        let now = Instant::now();
+        for (_i, (scripthash, old_statushash)) in script_hashes.iter().enumerate() {
+            let scripthash_buffer = scripthash.into_inner();
+            let status_result = query.status(&scripthash_buffer);
+            if status_result.is_err() {
+                warn!("compare_status_hashes error - {}", status_result.err().unwrap());
+                continue;
+            }
+            let status = status_result.unwrap();
+            let new_statushash = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
+            if new_statushash == *old_statushash {
+                continue;
+            }
+
+            debug!("compare_status_hashes: found diff. scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
+            if let Err(_) = tx.send(SubscriptionMessage::ScriptHashChange(scripthash_buffer, None)) {
+                debug!("compare_status_hashes: send failed because the channel is closed, shutting down")
+            }
+        }
+
+        debug!("compare_status_hashes: script_hashes.len() = {}, took {} seconds", script_hashes.len(), now.elapsed().as_secs());
+        Ok(())
+    }
+}
+
+pub struct SubscriptionsManager {
+    query: Arc<Query>,
+    notifications_sender: SyncSender<SubscriptionMessage>,
+}
 
 impl SubscriptionsManager {
+    fn get_az() -> String {
+        let res = reqwest::blocking::get("http://instance-data/latest/meta-data/placement/availability-zone");
+        if res.is_ok() {
+            return res.unwrap().text().unwrap();
+        } else {
+            return String::from("us-west-2c");
+        }
+    }
 
     pub fn get_script_hashes() -> Result<HashMap<Sha256dHash, Value>> {
         let client = DynamoDbClient::new(Region::UsWest2);
@@ -81,12 +274,106 @@ impl SubscriptionsManager {
         Ok(script_hashes)
     }
 
-    pub fn subscribe_script_hash_sqs_poller() {
-        let sqs = SqsClient::new(Region::UsWest2);
+    fn get_scripthashes_effected_by_tx(
+        &self,
+        txid: &Txid,
+        blockhash: Option<BlockHash>,
+    ) -> Result<Vec<FullHash>> {
+        let txn = self.query.load_txn_with_blockhashlookup(txid, blockhash)?;
+        let mut scripthashes = get_output_scripthash(&txn, None);
+
+        for txin in txn.input {
+            if txin.previous_output.is_null() {
+                continue;
+            }
+            let id: &Txid = &txin.previous_output.txid;
+            let n = txin.previous_output.vout as usize;
+
+            let txn = self.query.load_txn_with_blockhashlookup(&id, None)?;
+            scripthashes.extend(get_output_scripthash(&txn, Some(n)));
+        }
+        Ok(scripthashes)
+    }
+
+    pub fn start(query: Arc<Query>) -> SubscriptionsManager {
+        let now = Instant::now();
+        let script_hashes = SubscriptionsManager::get_script_hashes()
+            .unwrap_or(HashMap::new());
+        debug!("script_hashes.len() = {}, took {} milliseconds", script_hashes.len(), now.elapsed().as_millis());
+
+        let env = env::var("ENV").unwrap_or(String::from("dev"));
 
         let mut res = SubscriptionsManager::get_az();
         let az = res.split_off(res.len() - 2).to_uppercase();
-        let env = env::var("ENV").unwrap_or(String::from("dev"));
+
+        println!("Create SubscriptionsHandler");
+        let mut subs_handler = SubscriptionsHandler::new(query.clone(), script_hashes.clone(), env.clone());
+
+        let subscribe_sender = subs_handler.chan.sender();
+        SubscriptionsManager::start_subscribe_scripthash_sqs_poller(subscribe_sender, env, az);
+        println!("Started sqs poller for subscribes");
+
+        let status_hash_sender = subs_handler.chan.sender();
+        let status_hash_query = Arc::clone(&query);
+        spawn_thread("status_hashes_comparer", move || SubscriptionsHandler::compare_status_hashes(script_hashes.clone(), status_hash_query, status_hash_sender));
+        println!("Started compare status hashes");
+
+        let notifications_sender = subs_handler.chan.sender();
+
+        spawn_thread("subs_handler", move || subs_handler.handle_replies());
+        println!("Started SubscriptionsHandler handle_replies");
+
+        SubscriptionsManager {
+            query: query.clone(),
+            notifications_sender,
+        }
+    }
+
+    pub fn on_scripthash_change(
+        &mut self,
+        headers_changed: &Vec<HeaderEntry>,
+        txs_changed: HashSet<Txid>,
+    ) {
+        let mut txn_done: HashSet<Txid> = HashSet::new();
+        let mut scripthashes: HashMap<FullHash, Txid> = HashMap::new();
+
+        let mut insert_for_tx = |txid, blockhash| {
+            if !txn_done.insert(txid) {
+                return;
+            }
+            if let Ok(hashes) = self.get_scripthashes_effected_by_tx(&txid, blockhash) {
+                for h in hashes {
+                    scripthashes.insert(h, txid);
+                }
+            } else {
+                warn!("failed to get effected scripthashes for tx {}", txid);
+            }
+        };
+
+        for header in headers_changed {
+            let blockhash = header.hash();
+            let txids = match self.query.get_block_txids(&blockhash) {
+                Ok(txids) => txids,
+                Err(e) => {
+                    warn!("Failed to get blocktxids for {}: {}", blockhash, e);
+                    continue;
+                }
+            };
+            for txid in txids {
+                insert_for_tx(txid, Some(*blockhash));
+            }
+        }
+        for txid in txs_changed {
+            insert_for_tx(txid, None);
+        }
+
+        for (scripthash, txid) in scripthashes.drain() {
+            self.notifications_sender.send(SubscriptionMessage::ScriptHashChange(scripthash, Some(txid.into_inner())));
+        }
+    }
+
+    pub fn start_subscribe_scripthash_sqs_poller(sender: SyncSender<SubscriptionMessage>, env: String, az: String) {
+        let sqs = SqsClient::new(Region::UsWest2);
 
         let queue_name = format!("Electrum_address_subscription_{}_AZ_{}", env, az);
 
@@ -100,9 +387,13 @@ impl SubscriptionsManager {
             .sync()
             .expect("Get queue by URL request failed");
 
-        let queue_url = &response
+        println!("SQS Poller get queue response {:?}", response);
+
+        let queue_url = response
             .queue_url
             .expect("Queue url should be available from list queues");
+
+        println!("SQS Poller queue url {}", queue_url.clone());
 
         let receive_request = ReceiveMessageRequest {
             queue_url: queue_url.clone(),
@@ -110,41 +401,39 @@ impl SubscriptionsManager {
             ..Default::default()
         };
 
-        loop {
-            let response = sqs.receive_message(receive_request.clone()).sync();
-            for msg in response
-                .expect("Expected to have a receive message response")
-                .messages
-                .expect("message should be available")
-                {
-                    println!(
-                        "Received message '{}' with id {}",
-                        msg.body.clone().unwrap(),
-                        msg.message_id.clone().unwrap()
-                    );
-                    println!("Receipt handle is {:?}", msg.receipt_handle);
+        spawn_thread("sqs_poller", move || {
+            loop {
+                let response = sqs.receive_message(receive_request.clone()).sync();
+                for msg in response
+                    .expect("Expected to have a receive message response")
+                    .messages
+                    .expect("message should be available")
+                    {
+                        println!(
+                            "Received message '{}' with id {}",
+                            msg.body.clone().unwrap(),
+                            msg.message_id.clone().unwrap()
+                        );
+                        println!("Receipt handle is {:?}", msg.receipt_handle);
 
-                    let delete_message_request = DeleteMessageRequest {
-                        queue_url: queue_url.clone(),
-                        receipt_handle: msg.receipt_handle.clone().unwrap(),
-                    };
-                    match sqs.delete_message(delete_message_request).sync() {
-                        Ok(_) => println!(
-                            "Deleted message via receipt handle {:?}",
-                            msg.receipt_handle
-                        ),
-                        Err(e) => panic!("Couldn't delete message: {:?}", e),
+                        let script_hash_to_sub = msg.body.unwrap();
+
+                        sender.send(SubscriptionMessage::NewScriptHash(script_hash_to_sub));
+
+                        let delete_message_request = DeleteMessageRequest {
+                            queue_url: queue_url.clone(),
+                            receipt_handle: msg.receipt_handle.clone().unwrap(),
+                        };
+                        match sqs.delete_message(delete_message_request).sync() {
+                            Ok(_) => println!(
+                                "Deleted message via receipt handle {:?}",
+                                msg.receipt_handle
+                            ),
+                            Err(e) => warn!("Couldn't delete message: {:?}", e),
+                        }
                     }
-                }
-        }
-    }
+            }
+        });
 
-    fn get_az() -> String {
-        let res = reqwest::blocking::get("http://instance-data/latest/meta-data/placement/availability-zone");
-        if res.is_ok() {
-            return res.unwrap().text().unwrap();
-        } else {
-            return String::from("us-west-2c");
-        }
     }
 }
