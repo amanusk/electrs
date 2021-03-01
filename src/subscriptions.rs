@@ -375,7 +375,7 @@ impl SubscriptionsManager {
     pub fn start_subscribe_scripthash_sqs_poller(sender: SyncSender<SubscriptionMessage>, env: String, az: String) {
         let sqs = SqsClient::new(Region::UsWest2);
 
-        let queue_name = format!("Electrum_address_subscription_{}_AZ_{}", env, az);
+        let queue_name = format!("Electrum_address_subscription_{}_AZ-{}", env, az);
 
         let get_queue_by_name_request = GetQueueUrlRequest {
             queue_name: queue_name.clone(),
@@ -407,7 +407,6 @@ impl SubscriptionsManager {
                 for msg in response
                     .expect("Expected to have a receive message response")
                     .messages
-                    .expect("message should be available")
                     {
                         println!(
                             "Received message '{}' with id {}",
@@ -416,7 +415,8 @@ impl SubscriptionsManager {
                         );
                         println!("Receipt handle is {:?}", msg.receipt_handle);
 
-                        let script_hash_to_sub = msg.body.unwrap();
+                        let message_body = serde_json::from_str(msg.body.unwrap().as_str());
+                        let script_hash_to_sub = message_body["Message"];
 
                         sender.send(SubscriptionMessage::NewScriptHash(script_hash_to_sub));
 
