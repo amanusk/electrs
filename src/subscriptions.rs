@@ -145,7 +145,7 @@ impl SubscriptionsHandler {
         let response = sqs.send_message(send_msg_request).sync();
 
         match response {
-            Ok(resp) => debug!("Sent message with body '{}' and created message_id {}", msg_str, resp.message_id.unwrap()),
+            Ok(res) => debug!("Sent message with body '{}' and created message_id {}", msg_str, res.message_id.unwrap()),
             Err(error) => debug!("SendMessageError: {:?}", error),
         }
 
