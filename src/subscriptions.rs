@@ -137,8 +137,11 @@ impl SubscriptionsHandler {
             "status_hash": new_statushash
         }).to_string();
 
+        debug!("notification string {}", msg_str);
+
         let send_msg_request = SendMessageRequest {
             message_body: msg_str.clone(),
+            message_group_id: Option::from(String::from(new_statushash.clone().as_str().unwrap())),
             queue_url: self.tx_notification_url.clone(),
             ..Default::default()
         };
@@ -146,11 +149,11 @@ impl SubscriptionsHandler {
         let sqs = SqsClient::new(Region::UsWest2);
 
         let response = sqs.send_message(send_msg_request).sync();
-        debug!(
-            "Sent message with body '{}' and created message_id {}",
-            msg_str,
-            response.unwrap().message_id.unwrap()
-        );
+
+        match response {
+            Ok(resp) => debug!("Sent message with body '{}' and created message_id {}", msg_str, resp.message_id.unwrap()),
+            Err(error) => debug!("SendMessageError: {:?}", error),
+        }
 
         self.script_hashes.insert(scripthash, new_statushash);
         Ok(())
