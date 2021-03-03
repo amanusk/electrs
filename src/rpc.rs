@@ -282,7 +282,7 @@ impl Connection {
             "merkle" : merkle_vec}))
     }
 
-    async fn start_compare_status_hashes(&mut self) {
+    async fn start_compare_status_hashes(&mut self) -> Result<Value> {
         debug!("Call for comparison start");
         match self.subs_manager.lock().unwrap().comparison_status {
             ComparisonStatus::NotStarted => {
@@ -292,6 +292,7 @@ impl Connection {
             },
             _ => {}
         };
+        Ok(Value::Null)
     }
 
     fn get_compare_status_hashes_status(&self) -> Result<Value> {
