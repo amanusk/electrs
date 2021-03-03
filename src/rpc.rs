@@ -282,17 +282,20 @@ impl Connection {
             "merkle" : merkle_vec}))
     }
 
-    async fn start_compare_status_hashes(&mut self) -> Result<Value>  {
+    async fn start_compare_status_hashes(&mut self) {
+        debug!("Call for comparison start");
         match self.subs_manager.lock().unwrap().comparison_status {
             ComparisonStatus::NotStarted => {
+                debug!("Starting comparison start");
                 self.subs_manager.lock().unwrap().compare_status_hashes().await;
-                Ok(Value::Null)
+                {}
             },
-            _ => Ok(Value::Null)
-        }
+            _ => {}
+        };
     }
 
     fn get_compare_status_hashes_status(&self) -> Result<Value> {
+        debug!("Call for getting comparison status");
         match self.subs_manager.lock().unwrap().comparison_status {
             ComparisonStatus::NotStarted => Ok(Value::String(String::from("NEVER_STARTED"))),
             ComparisonStatus::InProgress => Ok(Value::String(String::from("IN_PROGRESS"))),
