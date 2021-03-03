@@ -32,6 +32,13 @@ fn get_output_scripthash(txn: &Transaction, n: Option<usize>) -> Vec<FullHash> {
     }
 }
 
+fn hash_from_value<T: Hash>(val: Option<&Value>) -> Result<T> {
+    let script_hash = val.chain_err(|| "missing hash")?;
+    let script_hash = script_hash.as_str().chain_err(|| "non-string hash")?;
+    let script_hash = T::from_hex(script_hash).chain_err(|| "non-hex hash")?;
+    Ok(script_hash)
+}
+
 #[derive(Debug)]
 pub enum SubscriptionMessage {
     NewScriptHash(String),
@@ -93,15 +100,15 @@ impl SubscriptionsHandler {
 
     fn notify_scripthash_subscriptions(&mut self, scripthash: FullHash, txid_opt: Option<FullHash>) -> Result<()> {
         let scripthash = Sha256dHash::from_slice(&scripthash[..]).expect("invalid scripthash");
-        let txid_opt = txid_opt.map(|txid| Sha256dHash::from_slice(&txid[..]).expect("invalid txid"));
+        let tx_hash = txid_opt.map(|txid| Sha256dHash::from_slice(&txid[..]).expect("invalid txid")).unwrap();
 
         let old_statushash;
         match self.script_hashes.get(&scripthash) {
             Some(statushash) => {
-                debug!("notify_scripthash_subscriptions: scripthash = {}, statushash = {}{}",
+                debug!("notify_scripthash_subscriptions: scripthash = {}, statushash = {}, tx_hash = {}",
                        scripthash,
                        statushash,
-                       txid_opt.map_or("".to_string(), |txid| format!(", txid = {}", txid))
+                       tx_hash
                 );
                 old_statushash = statushash;
             }
@@ -121,16 +128,25 @@ impl SubscriptionsHandler {
             return Ok(());
         }
 
-        debug!("notify_scripthash_subscriptions: scripthash = {}, old_statushash = {}, new_statushash = {}{}",
+        let tx_id = hash_from_value(Some(&Value::String(tx_hash.to_string()))).chain_err(|| "bad tx_hash")?;
+        let raw_tx =  self.query.get_transaction(&tx_id, true);
+
+        if raw_tx.is_err() {
+            warn!("notify_scripthash_subscriptions error - {}", raw_tx.err().unwrap());
+            return Ok(());
+        }
+
+        debug!("notify_scripthash_subscriptions: scripthash = {}, old_statushash = {}, new_statushash = {}, tx_hash = {}",
                scripthash,
                old_statushash,
                new_statushash,
-               txid_opt.map_or("".to_string(), |txid| format!(", txid = {}", txid))
+               tx_hash
         );
 
         let msg_str = json!({
             "script_hash": scripthash,
-            "status_hash": new_statushash
+            "status_hash": new_statushash,
+            "raw_tx": raw_tx.unwrap()
         }).to_string();
 
         let send_msg_request = SendMessageRequest {
