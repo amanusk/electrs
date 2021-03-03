@@ -6,7 +6,7 @@ extern crate log;
 
 use error_chain::ChainedError;
 use std::process;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use electrs::{
@@ -70,8 +70,8 @@ fn run_server(config: &Config) -> Result<()> {
     let query = Query::new(app.clone(), &metrics, tx_cache, config.txid_limit, config.txid_warning_limit);
     let relayfee = query.get_relayfee()?;
     debug!("relayfee: {} BTC", relayfee);
+    let subs_manager =  Arc::new(Mutex::new(SubscriptionsManager::start(query.clone())));
 
-    let mut subs = None; // Electrum subscriptions and notifications manager
     let mut server = None; // Electrum RPC server
     loop {
         debug!("------ update ------");
@@ -83,14 +83,12 @@ fn run_server(config: &Config) -> Result<()> {
         let changed_mempool_txs = query.update_mempool()?;
         debug!("changed_mempool_txs.len() = {}", changed_mempool_txs.len());
 
-        let subs_manager = subs
-            .get_or_insert_with(|| SubscriptionsManager::start(query.clone()));
         if changed_headers.len() <= MAX_SCRIPTHASH_BLOCKS {
-            subs_manager.on_scripthash_change(&changed_headers, changed_mempool_txs);
+            subs_manager.lock().unwrap().on_scripthash_change(&changed_headers, changed_mempool_txs);
         }
 
         let rpc = server
-            .get_or_insert_with(|| RPC::start(config.electrum_rpc_addr, query.clone(), &metrics, relayfee));
+            .get_or_insert_with(|| RPC::start(config.electrum_rpc_addr, query.clone(), &metrics, relayfee, subs_manager.clone()));
         if let Some(header) = new_tip {
             rpc.notify_subscriptions_chaintip(header);
         }

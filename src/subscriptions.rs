@@ -163,32 +163,13 @@ impl SubscriptionsHandler {
             }
         }
     }
+}
 
-    fn compare_status_hashes(script_hashes: HashMap<Sha256dHash, Value>, query: Arc<Query>, tx: SyncSender<SubscriptionMessage>) -> Result<()> {
-        debug!("compare_status_hashes: script_hashes.len() = {}, starting", script_hashes.len());
-        let now = Instant::now();
-        for (_i, (scripthash, old_statushash)) in script_hashes.iter().enumerate() {
-            let scripthash_buffer = scripthash.into_inner();
-            let status_result = query.status(&scripthash_buffer);
-            if status_result.is_err() {
-                warn!("compare_status_hashes error - {}", status_result.err().unwrap());
-                continue;
-            }
-            let status = status_result.unwrap();
-            let new_statushash = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
-            if new_statushash == *old_statushash {
-                continue;
-            }
-
-            debug!("compare_status_hashes: found diff. scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
-            if let Err(_) = tx.send(SubscriptionMessage::ScriptHashChange(scripthash_buffer, None)) {
-                debug!("compare_status_hashes: send failed because the channel is closed, shutting down")
-            }
-        }
-
-        debug!("compare_status_hashes: script_hashes.len() = {}, took {} seconds", script_hashes.len(), now.elapsed().as_secs());
-        Ok(())
-    }
+#[derive(Debug)]
+pub enum ComparisonStatus {
+    NotStarted,
+    InProgress,
+    Done
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -208,6 +189,7 @@ struct SNSMessage {
 pub struct SubscriptionsManager {
     query: Arc<Query>,
     notifications_sender: SyncSender<SubscriptionMessage>,
+    pub comparison_status: ComparisonStatus,
 }
 
 impl SubscriptionsManager {
@@ -305,6 +287,38 @@ impl SubscriptionsManager {
         Ok(scripthashes)
     }
 
+    pub async fn compare_status_hashes(&mut self) {
+        let script_hashes_res = SubscriptionsManager::get_script_hashes();
+        if script_hashes_res.is_err() {
+            return ()
+        }
+        let script_hashes = script_hashes_res.unwrap();
+        self.comparison_status = ComparisonStatus::InProgress;
+        debug!("compare_status_hashes: script_hashes.len() = {}, starting", script_hashes.len());
+        let now = Instant::now();
+        for (_i, (scripthash, old_statushash)) in script_hashes.iter().enumerate() {
+            let scripthash_buffer = scripthash.into_inner();
+            let status_result = self.query.status(&scripthash_buffer);
+            if status_result.is_err() {
+                warn!("compare_status_hashes error - {}", status_result.err().unwrap());
+                continue;
+            }
+            let status = status_result.unwrap();
+            let new_statushash = status.hash().map_or(Value::Null, |h| json!(hex::encode(h)));
+            if new_statushash == *old_statushash {
+                continue;
+            }
+
+            debug!("compare_status_hashes: found diff. scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
+            if let Err(_) = self.notifications_sender.send(SubscriptionMessage::ScriptHashChange(scripthash_buffer, None)) {
+                debug!("compare_status_hashes: send failed because the channel is closed, shutting down")
+            }
+        }
+
+        debug!("compare_status_hashes: script_hashes.len() = {}, took {} seconds", script_hashes.len(), now.elapsed().as_secs());
+        self.comparison_status = ComparisonStatus::Done;
+    }
+
     pub fn start(query: Arc<Query>) -> SubscriptionsManager {
         let now = Instant::now();
         let script_hashes = SubscriptionsManager::get_script_hashes()
@@ -323,11 +337,6 @@ impl SubscriptionsManager {
         SubscriptionsManager::start_subscribe_scripthash_sqs_poller(subscribe_sender, env, az);
         debug!("Started sqs poller for subscribes");
 
-        let status_hash_sender = subs_handler.chan.sender();
-        let status_hash_query = Arc::clone(&query);
-        spawn_thread("status_hashes_comparer", move || SubscriptionsHandler::compare_status_hashes(script_hashes.clone(), status_hash_query, status_hash_sender));
-        debug!("Started compare status hashes");
-
         let notifications_sender = subs_handler.chan.sender();
 
         spawn_thread("subs_handler", move || subs_handler.handle_replies());
@@ -336,11 +345,12 @@ impl SubscriptionsManager {
         SubscriptionsManager {
             query: query.clone(),
             notifications_sender,
+            comparison_status: ComparisonStatus::NotStarted,
         }
     }
 
     pub fn on_scripthash_change(
-        &mut self,
+        &self,
         headers_changed: &Vec<HeaderEntry>,
         txs_changed: HashSet<Txid>,
     ) {

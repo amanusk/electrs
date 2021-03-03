@@ -3,6 +3,7 @@ use bitcoin::consensus::encode::{deserialize, serialize};
 use bitcoin_hashes::hex::{FromHex, ToHex};
 use bitcoin_hashes::{sha256d::Hash as Sha256dHash, Hash};
 use error_chain::ChainedError;
+use futures::executor::block_on;
 use hex;
 use serde_json::{from_str, Value};
 use std::collections::{HashMap};
@@ -15,6 +16,7 @@ use std::thread;
 use crate::errors::*;
 use crate::metrics::{HistogramOpts, HistogramVec, Metrics};
 use crate::query::{Query, Status};
+use crate::subscriptions::{SubscriptionsManager, ComparisonStatus};
 use crate::util::{spawn_thread, Channel, HeaderEntry, SyncChannel};
 
 const ELECTRS_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -77,6 +79,7 @@ struct Connection {
     chan: SyncChannel<Message>,
     stats: Arc<Stats>,
     relayfee: f64,
+    subs_manager: Arc<Mutex<SubscriptionsManager>>,
 }
 
 impl Connection {
@@ -86,6 +89,7 @@ impl Connection {
         addr: SocketAddr,
         stats: Arc<Stats>,
         relayfee: f64,
+        subs_manager: Arc<Mutex<SubscriptionsManager>>,
     ) -> Connection {
         Connection {
             query,
@@ -95,6 +99,7 @@ impl Connection {
             chan: SyncChannel::new(10),
             stats,
             relayfee,
+            subs_manager,
         }
     }
 
@@ -277,6 +282,24 @@ impl Connection {
             "merkle" : merkle_vec}))
     }
 
+    async fn start_compare_status_hashes(&mut self) -> Result<Value>  {
+        match self.subs_manager.lock().unwrap().comparison_status {
+            ComparisonStatus::NotStarted => {
+                self.subs_manager.lock().unwrap().compare_status_hashes().await;
+                Ok(Value::Null)
+            },
+            _ => Ok(Value::Null)
+        }
+    }
+
+    fn get_compare_status_hashes_status(&self) -> Result<Value> {
+        match self.subs_manager.lock().unwrap().comparison_status {
+            ComparisonStatus::NotStarted => Ok(Value::String(String::from("NEVER_STARTED"))),
+            ComparisonStatus::InProgress => Ok(Value::String(String::from("IN_PROGRESS"))),
+            ComparisonStatus::Done => Ok(Value::String(String::from("COMPLETED"))),
+        }
+    }
+
     fn handle_command(&mut self, method: &str, params: &[Value], id: &Value) -> Result<Value> {
         let timer = self
             .stats
@@ -297,13 +320,15 @@ impl Connection {
             "blockchain.transaction.get_merkle" => self.blockchain_transaction_get_merkle(&params),
             "blockchain.transaction.id_from_pos" => {
                 self.blockchain_transaction_id_from_pos(&params)
-            }
+            },
             "mempool.get_fee_histogram" => self.mempool_get_fee_histogram(),
             "server.banner" => self.server_banner(),
             "server.donation_address" => self.server_donation_address(),
             "server.peers.subscribe" => self.server_peers_subscribe(),
             "server.ping" => Ok(Value::Null),
             "server.version" => self.server_version(),
+            "statushash.compare.start" => block_on(self.start_compare_status_hashes()),
+            "statushash.compare.status" => self.get_compare_status_hashes_status(),
             &_ => bail!("unknown method {} {:?}", method, params),
         };
         timer.observe_duration();
@@ -506,7 +531,7 @@ impl RPC {
         chan
     }
 
-    pub fn start(addr: SocketAddr, query: Arc<Query>, metrics: &Metrics, relayfee: f64) -> RPC {
+    pub fn start(addr: SocketAddr, query: Arc<Query>, metrics: &Metrics, relayfee: f64, subs_manager: Arc<Mutex<SubscriptionsManager>>) -> RPC {
         let stats = Arc::new(Stats {
             latency: metrics.histogram_vec(
                 HistogramOpts::new("electrs_electrum_rpc", "Electrum RPC latency (seconds)"),
@@ -531,11 +556,12 @@ impl RPC {
                     let query = Arc::clone(&query);
                     let senders = Arc::clone(&senders);
                     let stats = Arc::clone(&stats);
+                    let subs_manager = subs_manager.clone();
                     let garbage_sender = garbage_sender.clone();
 
                     let spawned = spawn_thread("peer", move || {
                         info!("[{}] connected peer", addr);
-                        let conn = Connection::new(query, stream, addr, stats, relayfee);
+                        let conn = Connection::new(query, stream, addr, stats, relayfee, subs_manager);
                         senders.lock().unwrap().push(conn.chan.sender());
                         conn.run();
                         info!("[{}] disconnected peer", addr);
