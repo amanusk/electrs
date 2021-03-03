@@ -42,7 +42,7 @@ fn hash_from_value<T: Hash>(val: Option<&Value>) -> Result<T> {
 #[derive(Debug)]
 pub enum SubscriptionMessage {
     NewScriptHash(String),
-    ScriptHashChange(FullHash, Option<FullHash>),
+    ScriptHashChange(FullHash, Option<FullHash>, bool),
     Done,
 }
 
@@ -98,7 +98,7 @@ impl SubscriptionsHandler {
         Ok(())
     }
 
-    fn notify_scripthash_subscriptions(&mut self, scripthash: FullHash, txid_opt: Option<FullHash>) -> Result<()> {
+    fn notify_scripthash_subscriptions(&mut self, scripthash: FullHash, txid_opt: Option<FullHash>, is_backfill: bool) -> Result<()> {
         let scripthash = Sha256dHash::from_slice(&scripthash[..]).expect("invalid scripthash");
         let tx_hash = txid_opt.map(|txid| Sha256dHash::from_slice(&txid[..]).expect("invalid txid")).unwrap();
 
@@ -128,14 +128,6 @@ impl SubscriptionsHandler {
             return Ok(());
         }
 
-        let tx_id = hash_from_value(Some(&Value::String(tx_hash.to_string()))).chain_err(|| "bad tx_hash")?;
-        let raw_tx =  self.query.get_transaction(&tx_id, true);
-
-        if raw_tx.is_err() {
-            warn!("notify_scripthash_subscriptions error - {}", raw_tx.err().unwrap());
-            return Ok(());
-        }
-
         debug!("notify_scripthash_subscriptions: scripthash = {}, old_statushash = {}, new_statushash = {}, tx_hash = {}",
                scripthash,
                old_statushash,
@@ -143,11 +135,27 @@ impl SubscriptionsHandler {
                tx_hash
         );
 
-        let msg_str = json!({
-            "script_hash": scripthash,
-            "status_hash": new_statushash,
-            "raw_tx": raw_tx.unwrap()
-        }).to_string();
+        let msg_str;
+
+        if is_backfill {
+            msg_str = json!({
+                "script_hash": scripthash,
+                "status_hash": new_statushash
+            }).to_string();
+        } else {
+            let tx_id = hash_from_value(Some(&Value::String(tx_hash.to_string()))).chain_err(|| "bad tx_hash")?;
+            let raw_tx_res =  self.query.get_transaction(&tx_id, true);
+
+            if raw_tx_res.is_err() {
+                warn!("notify_scripthash_subscriptions error - {}", raw_tx_res.err().unwrap());
+                return Ok(());
+            }
+            msg_str = json!({
+                "script_hash": scripthash,
+                "status_hash": new_statushash,
+                "raw_tx": raw_tx_res.unwrap()
+            }).to_string();
+        }
 
         let send_msg_request = SendMessageRequest {
             message_body: msg_str.clone(),
@@ -174,7 +182,7 @@ impl SubscriptionsHandler {
             let msg = self.chan.receiver().recv().chain_err(|| "channel closed")?;
             match msg {
                 SubscriptionMessage::NewScriptHash(script_hash) => self.subscribe_script_hash(script_hash)?,
-                SubscriptionMessage::ScriptHashChange(hash, txid) => self.notify_scripthash_subscriptions(hash, txid)?,
+                SubscriptionMessage::ScriptHashChange(hash, txid, is_backfill) => self.notify_scripthash_subscriptions(hash, txid, is_backfill)?,
                 SubscriptionMessage::Done => return Ok(()),
             }
         }
@@ -197,7 +205,7 @@ impl SubscriptionsHandler {
             }
 
             debug!("compare_status_hashes: found diff. scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
-            if let Err(_) = tx.send(SubscriptionMessage::ScriptHashChange(scripthash_buffer, None)) {
+            if let Err(_) = tx.send(SubscriptionMessage::ScriptHashChange(scripthash_buffer, None, true)) {
                 debug!("compare_status_hashes: send failed because the channel is closed, shutting down")
             }
         }
@@ -394,7 +402,7 @@ impl SubscriptionsManager {
         }
 
         for (scripthash, txid) in scripthashes.drain() {
-            self.notifications_sender.send(SubscriptionMessage::ScriptHashChange(scripthash, Some(txid.into_inner())));
+            self.notifications_sender.send(SubscriptionMessage::ScriptHashChange(scripthash, Some(txid.into_inner()), false));
         }
     }
 
