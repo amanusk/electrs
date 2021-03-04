@@ -6,7 +6,7 @@ extern crate log;
 
 use error_chain::ChainedError;
 use std::process;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use electrs::{
@@ -22,8 +22,9 @@ use electrs::{
     rpc::RPC,
     signal::Waiter,
     store::{full_compaction, is_fully_compacted, DBStore},
-    subscriptions::SubscriptionsManager,
+    subscriptions::{SubscriptionsManager, ScriptHashComparer},
 };
+use std::sync::atomic::AtomicBool;
 
 // If we see this more new blocks than this, don't look for scripthash
 // changes.
@@ -70,7 +71,10 @@ fn run_server(config: &Config) -> Result<()> {
     let query = Query::new(app.clone(), &metrics, tx_cache, config.txid_limit, config.txid_warning_limit);
     let relayfee = query.get_relayfee()?;
     debug!("relayfee: {} BTC", relayfee);
-    let subs_manager =  Arc::new(Mutex::new(SubscriptionsManager::start(query.clone())));
+    let subs_manager =  SubscriptionsManager::start(query.clone());
+
+    let script_hash_comparison_status = Arc::new(AtomicBool::new(false));
+    let comparison_handler = ScriptHashComparer::new(query.clone(),subs_manager.notifications_sender.clone(), script_hash_comparison_status.clone());
 
     let mut server = None; // Electrum RPC server
     loop {
@@ -84,11 +88,11 @@ fn run_server(config: &Config) -> Result<()> {
         debug!("changed_mempool_txs.len() = {}", changed_mempool_txs.len());
 
         if changed_headers.len() <= MAX_SCRIPTHASH_BLOCKS {
-            subs_manager.lock().unwrap().on_scripthash_change(&changed_headers, changed_mempool_txs);
+            subs_manager.on_scripthash_change(&changed_headers, changed_mempool_txs);
         }
 
         let rpc = server
-            .get_or_insert_with(|| RPC::start(config.electrum_rpc_addr, query.clone(), &metrics, relayfee, subs_manager.clone()));
+            .get_or_insert_with(|| RPC::start(config.electrum_rpc_addr, query.clone(), &metrics, relayfee, comparison_handler.chan.sender().clone(), script_hash_comparison_status.clone()));
         if let Some(header) = new_tip {
             rpc.notify_subscriptions_chaintip(header);
         }

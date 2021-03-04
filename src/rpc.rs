@@ -3,7 +3,6 @@ use bitcoin::consensus::encode::{deserialize, serialize};
 use bitcoin_hashes::hex::{FromHex, ToHex};
 use bitcoin_hashes::{sha256d::Hash as Sha256dHash, Hash};
 use error_chain::ChainedError;
-use futures::executor::block_on;
 use hex;
 use serde_json::{from_str, Value};
 use std::collections::{HashMap};
@@ -11,12 +10,13 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc::{Sender, SyncSender};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use crate::errors::*;
 use crate::metrics::{HistogramOpts, HistogramVec, Metrics};
 use crate::query::{Query, Status};
-use crate::subscriptions::{SubscriptionsManager, ComparisonStatus};
+use crate::subscriptions::{ScriptHashCompareMessage};
 use crate::util::{spawn_thread, Channel, HeaderEntry, SyncChannel};
 
 const ELECTRS_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -79,7 +79,8 @@ struct Connection {
     chan: SyncChannel<Message>,
     stats: Arc<Stats>,
     relayfee: f64,
-    subs_manager: Arc<Mutex<SubscriptionsManager>>,
+    comparison_sender: SyncSender<ScriptHashCompareMessage>,
+    comparison_in_progress: Arc<AtomicBool>
 }
 
 impl Connection {
@@ -89,7 +90,8 @@ impl Connection {
         addr: SocketAddr,
         stats: Arc<Stats>,
         relayfee: f64,
-        subs_manager: Arc<Mutex<SubscriptionsManager>>,
+        comparison_sender: SyncSender<ScriptHashCompareMessage>,
+        comparison_in_progress: Arc<AtomicBool>
     ) -> Connection {
         Connection {
             query,
@@ -99,7 +101,8 @@ impl Connection {
             chan: SyncChannel::new(10),
             stats,
             relayfee,
-            subs_manager,
+            comparison_sender,
+            comparison_in_progress
         }
     }
 
@@ -282,25 +285,21 @@ impl Connection {
             "merkle" : merkle_vec}))
     }
 
-    async fn start_compare_status_hashes(&mut self) -> Result<Value> {
+    fn start_compare_status_hashes(&mut self) -> Result<Value> {
         debug!("Call for comparison start");
-        match self.subs_manager.lock().unwrap().comparison_status {
-            ComparisonStatus::NotStarted => {
-                debug!("Starting comparison start");
-                self.subs_manager.lock().unwrap().compare_status_hashes().await;
-                {}
-            },
-            _ => {}
-        };
+        if !self.comparison_in_progress.load(Ordering::SeqCst) {
+            debug!("Starting comparison start");
+            self.comparison_sender.send(ScriptHashCompareMessage::Start);
+        }
         Ok(Value::Null)
     }
 
     fn get_compare_status_hashes_status(&self) -> Result<Value> {
         debug!("Call for getting comparison status");
-        match self.subs_manager.lock().unwrap().comparison_status {
-            ComparisonStatus::NotStarted => Ok(Value::String(String::from("NEVER_STARTED"))),
-            ComparisonStatus::InProgress => Ok(Value::String(String::from("IN_PROGRESS"))),
-            ComparisonStatus::Done => Ok(Value::String(String::from("COMPLETED"))),
+        if self.comparison_in_progress.load(Ordering::SeqCst) {
+            Ok(Value::String(String::from("IN_PROGRESS")))
+        } else {
+            Ok(Value::String(String::from("DONE")))
         }
     }
 
@@ -331,7 +330,7 @@ impl Connection {
             "server.peers.subscribe" => self.server_peers_subscribe(),
             "server.ping" => Ok(Value::Null),
             "server.version" => self.server_version(),
-            "statushash.compare.start" => block_on(self.start_compare_status_hashes()),
+            "statushash.compare.start" => self.start_compare_status_hashes(),
             "statushash.compare.status" => self.get_compare_status_hashes_status(),
             &_ => bail!("unknown method {} {:?}", method, params),
         };
@@ -535,7 +534,7 @@ impl RPC {
         chan
     }
 
-    pub fn start(addr: SocketAddr, query: Arc<Query>, metrics: &Metrics, relayfee: f64, subs_manager: Arc<Mutex<SubscriptionsManager>>) -> RPC {
+    pub fn start(addr: SocketAddr, query: Arc<Query>, metrics: &Metrics, relayfee: f64, comparison_sender: SyncSender<ScriptHashCompareMessage>, comparison_status: Arc<AtomicBool>) -> RPC {
         let stats = Arc::new(Stats {
             latency: metrics.histogram_vec(
                 HistogramOpts::new("electrs_electrum_rpc", "Electrum RPC latency (seconds)"),
@@ -560,12 +559,13 @@ impl RPC {
                     let query = Arc::clone(&query);
                     let senders = Arc::clone(&senders);
                     let stats = Arc::clone(&stats);
-                    let subs_manager = subs_manager.clone();
+                    let comparison_sender = comparison_sender.clone();
                     let garbage_sender = garbage_sender.clone();
+                    let comparison_status = comparison_status.clone();
 
                     let spawned = spawn_thread("peer", move || {
                         info!("[{}] connected peer", addr);
-                        let conn = Connection::new(query, stream, addr, stats, relayfee, subs_manager);
+                        let conn = Connection::new(query, stream, addr, stats, relayfee, comparison_sender, comparison_status);
                         senders.lock().unwrap().push(conn.chan.sender());
                         conn.run();
                         info!("[{}] disconnected peer", addr);
