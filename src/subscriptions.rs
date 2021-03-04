@@ -56,16 +56,20 @@ impl ScriptHashComparer {
     }
 
     fn compare_status_hashes(&mut self) {
-        debug!("compare_status_hashes begin");
+        info!("compare_status_hashes begin");
         self.in_progress.store(true, Ordering::Relaxed);
         let script_hashes_res = SubscriptionsManager::get_script_hashes();
         if script_hashes_res.is_err() {
             return ()
         }
         let script_hashes = script_hashes_res.unwrap();
-        debug!("compare_status_hashes: script_hashes.len() = {}, starting", script_hashes.len());
+        info!("compare_status_hashes: script_hashes.len() = {}, starting", script_hashes.len());
         let now = Instant::now();
-        for (_i, (scripthash, old_statushash)) in script_hashes.iter().enumerate() {
+        for (i, (scripthash, old_statushash)) in script_hashes.iter().enumerate() {
+            if i % 1000 == 0 {
+                info!("Comparing scripthash #{}", i);
+            }
+
             let scripthash_buffer = scripthash.into_inner();
             let status_result = self.query.status(&scripthash_buffer);
             if status_result.is_err() {
@@ -78,13 +82,13 @@ impl ScriptHashComparer {
                 continue;
             }
 
-            debug!("compare_status_hashes: found diff. scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
+            info!("compare_status_hashes: found diff. scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
             if let Err(_) = self.notifications_sender.send(SubscriptionMessage::ScriptHashChange(scripthash_buffer, None)) {
-                debug!("compare_status_hashes: send failed because the channel is closed, shutting down")
+                warn!("compare_status_hashes: send failed because the channel is closed, shutting down")
             }
         }
 
-        debug!("compare_status_hashes: script_hashes.len() = {}, took {} seconds", script_hashes.len(), now.elapsed().as_secs());
+        info!("compare_status_hashes: script_hashes.len() = {}, took {} seconds", script_hashes.len(), now.elapsed().as_secs());
         self.in_progress.store(false, Ordering::Relaxed);
     }
 
