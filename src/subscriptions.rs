@@ -56,12 +56,13 @@ impl ScriptHashComparer {
     }
 
     fn compare_status_hashes(&mut self) {
+        debug!("compare_status_hashes begin");
+        self.in_progress.store(true, Ordering::Relaxed);
         let script_hashes_res = SubscriptionsManager::get_script_hashes();
         if script_hashes_res.is_err() {
             return ()
         }
         let script_hashes = script_hashes_res.unwrap();
-        self.in_progress.store(true, Ordering::Relaxed);
         debug!("compare_status_hashes: script_hashes.len() = {}, starting", script_hashes.len());
         let now = Instant::now();
         for (_i, (scripthash, old_statushash)) in script_hashes.iter().enumerate() {
@@ -88,6 +89,7 @@ impl ScriptHashComparer {
     }
 
     pub fn handle_request(&mut self) -> Result<()> {
+        debug!("compare_status_hashes listener started");
         loop {
             let msg = self.chan.receiver().recv().chain_err(|| "channel closed")?;
             match msg {
@@ -254,6 +256,7 @@ struct SNSMessage {
 pub struct SubscriptionsManager {
     query: Arc<Query>,
     pub notifications_sender: SyncSender<SubscriptionMessage>,
+    pub comparison_sender: SyncSender<ScriptHashCompareMessage>,
 }
 
 impl SubscriptionsManager {
@@ -351,7 +354,7 @@ impl SubscriptionsManager {
         Ok(scripthashes)
     }
 
-    pub fn start(query: Arc<Query>) -> SubscriptionsManager {
+    pub fn start(query: Arc<Query>, script_hash_comparison_status: Arc<AtomicBool>) -> SubscriptionsManager {
         let now = Instant::now();
         let script_hashes = SubscriptionsManager::get_script_hashes()
             .unwrap_or(HashMap::new());
@@ -371,12 +374,19 @@ impl SubscriptionsManager {
 
         let notifications_sender = subs_handler.chan.sender();
 
+        let mut comparison_handler = ScriptHashComparer::new(query.clone(),subs_handler.chan.sender(), script_hash_comparison_status.clone());
+        let comparison_sender = comparison_handler.chan.sender();
+
+        spawn_thread("comparison_handler", move || comparison_handler.handle_request());
+        debug!("comparison_handler created");
+
         spawn_thread("subs_handler", move || subs_handler.handle_replies());
         debug!("Started SubscriptionsHandler handle_replies");
 
         SubscriptionsManager {
             query: query.clone(),
             notifications_sender,
+            comparison_sender
         }
     }
 
