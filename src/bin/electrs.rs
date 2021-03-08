@@ -24,6 +24,7 @@ use electrs::{
     store::{full_compaction, is_fully_compacted, DBStore},
     subscriptions::SubscriptionsManager,
 };
+use std::sync::atomic::AtomicBool;
 
 // If we see this more new blocks than this, don't look for scripthash
 // changes.
@@ -70,8 +71,9 @@ fn run_server(config: &Config) -> Result<()> {
     let query = Query::new(app.clone(), &metrics, tx_cache, config.txid_limit, config.txid_warning_limit);
     let relayfee = query.get_relayfee()?;
     debug!("relayfee: {} BTC", relayfee);
+    let script_hash_comparison_status = Arc::new(AtomicBool::new(false));
+    let subs_manager =  SubscriptionsManager::start(query.clone(), script_hash_comparison_status.clone());
 
-    let mut subs = None; // Electrum subscriptions and notifications manager
     let mut server = None; // Electrum RPC server
     loop {
         debug!("------ update ------");
@@ -83,14 +85,12 @@ fn run_server(config: &Config) -> Result<()> {
         let changed_mempool_txs = query.update_mempool()?;
         debug!("changed_mempool_txs.len() = {}", changed_mempool_txs.len());
 
-        let subs_manager = subs
-            .get_or_insert_with(|| SubscriptionsManager::start(query.clone()));
         if changed_headers.len() <= MAX_SCRIPTHASH_BLOCKS {
             subs_manager.on_scripthash_change(&changed_headers, changed_mempool_txs);
         }
 
         let rpc = server
-            .get_or_insert_with(|| RPC::start(config.electrum_rpc_addr, query.clone(), &metrics, relayfee));
+            .get_or_insert_with(|| RPC::start(config.electrum_rpc_addr, query.clone(), &metrics, relayfee, subs_manager.comparison_sender.clone(), script_hash_comparison_status.clone()));
         if let Some(header) = new_tip {
             rpc.notify_subscriptions_chaintip(header);
         }
