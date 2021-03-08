@@ -22,7 +22,7 @@ use electrs::{
     rpc::RPC,
     signal::Waiter,
     store::{full_compaction, is_fully_compacted, DBStore},
-    subscriptions::{SubscriptionsManager},
+    subscriptions::SubscriptionsManager,
 };
 use std::sync::atomic::AtomicBool;
 
