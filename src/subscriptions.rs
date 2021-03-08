@@ -42,7 +42,7 @@ fn hash_from_value<T: Hash>(val: Option<&Value>) -> Result<T> {
 #[derive(Debug)]
 pub enum SubscriptionMessage {
     NewScriptHash(String),
-    ScriptHashChange(FullHash, Option<FullHash>, bool),
+    ScriptHashChange(FullHash, Option<FullHash>),
     Done,
 }
 
@@ -98,17 +98,17 @@ impl SubscriptionsHandler {
         Ok(())
     }
 
-    fn notify_scripthash_subscriptions(&mut self, scripthash: FullHash, txid_opt: Option<FullHash>, is_backfill: bool) -> Result<()> {
+    fn notify_scripthash_subscriptions(&mut self, scripthash: FullHash, txid_opt: Option<FullHash>) -> Result<()> {
         let scripthash = Sha256dHash::from_slice(&scripthash[..]).expect("invalid scripthash");
-        let tx_hash = txid_opt.map(|txid| Sha256dHash::from_slice(&txid[..]).expect("invalid txid")).unwrap();
+        let tx_hash_opt = txid_opt.map(|txid| Sha256dHash::from_slice(&txid[..]).expect("invalid txid"));
 
         let old_statushash;
         match self.script_hashes.get(&scripthash) {
             Some(statushash) => {
-                debug!("notify_scripthash_subscriptions: scripthash = {}, statushash = {}, tx_hash = {}",
-                       scripthash,
-                       statushash,
-                       tx_hash
+                debug!("notify_scripthash_subscriptions: scripthash = {}, statushash = {}, tx_hash = {:?}",
+                   scripthash,
+                   statushash,
+                   tx_hash_opt
                 );
                 old_statushash = statushash;
             }
@@ -128,22 +128,22 @@ impl SubscriptionsHandler {
             return Ok(());
         }
 
-        debug!("notify_scripthash_subscriptions: scripthash = {}, old_statushash = {}, new_statushash = {}, tx_hash = {}",
-               scripthash,
-               old_statushash,
-               new_statushash,
-               tx_hash
+        debug!("notify_scripthash_subscriptions: scripthash = {}, old_statushash = {}, new_statushash = {}, tx_hash = {:?}",
+           scripthash,
+           old_statushash,
+           new_statushash,
+           tx_hash_opt
         );
 
         let msg_str;
 
-        if is_backfill {
+        if tx_hash_opt.is_none() {
             msg_str = json!({
                 "script_hash": scripthash,
                 "status_hash": new_statushash
             }).to_string();
         } else {
-            let tx_id = hash_from_value(Some(&Value::String(tx_hash.to_string()))).chain_err(|| "bad tx_hash")?;
+            let tx_id = hash_from_value(Some(&Value::String(tx_hash_opt.unwrap().to_string()))).chain_err(|| "bad tx_hash")?;
             let raw_tx_res =  self.query.get_transaction(&tx_id, true);
 
             if raw_tx_res.is_err() {
@@ -182,7 +182,7 @@ impl SubscriptionsHandler {
             let msg = self.chan.receiver().recv().chain_err(|| "channel closed")?;
             match msg {
                 SubscriptionMessage::NewScriptHash(script_hash) => self.subscribe_script_hash(script_hash)?,
-                SubscriptionMessage::ScriptHashChange(hash, txid, is_backfill) => self.notify_scripthash_subscriptions(hash, txid, is_backfill)?,
+                SubscriptionMessage::ScriptHashChange(hash, txid) => self.notify_scripthash_subscriptions(hash, txid)?,
                 SubscriptionMessage::Done => return Ok(()),
             }
         }
@@ -205,7 +205,7 @@ impl SubscriptionsHandler {
             }
 
             debug!("compare_status_hashes: found diff. scripthash = {}, old_statushash = {}, new_statushash = {}", scripthash, old_statushash, new_statushash);
-            if let Err(_) = tx.send(SubscriptionMessage::ScriptHashChange(scripthash_buffer, None, true)) {
+            if let Err(_) = tx.send(SubscriptionMessage::ScriptHashChange(scripthash_buffer, None)) {
                 debug!("compare_status_hashes: send failed because the channel is closed, shutting down")
             }
         }
@@ -402,7 +402,7 @@ impl SubscriptionsManager {
         }
 
         for (scripthash, txid) in scripthashes.drain() {
-            self.notifications_sender.send(SubscriptionMessage::ScriptHashChange(scripthash, Some(txid.into_inner()), false));
+            self.notifications_sender.send(SubscriptionMessage::ScriptHashChange(scripthash, Some(txid.into_inner())));
         }
     }
 
@@ -440,7 +440,7 @@ impl SubscriptionsManager {
                 let response = sqs.receive_message(receive_request.clone()).sync();
                 match response.expect("Expected to have a receive message response").messages {
                     Some(messages) => for msg in messages {
-                        let message_body: std::result::Result<SNSMessage, serde_json::Error> =  serde_json::from_str(msg.body.unwrap().as_str());
+                        let message_body: std::result::Result<SNSMessage, serde_json::Error> = serde_json::from_str(msg.body.unwrap().as_str());
 
                         if message_body.is_err() {
                             continue;
