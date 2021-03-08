@@ -170,9 +170,9 @@ impl SubscriptionsHandler {
         match self.script_hashes.get(&scripthash) {
             Some(statushash) => {
                 debug!("notify_scripthash_subscriptions: scripthash = {}, statushash = {}{}",
-                       scripthash,
-                       statushash,
-                       txid_opt.map_or("".to_string(), |txid| format!(", txid = {}", txid))
+                   scripthash,
+                   statushash,
+                   txid_opt.map_or("".to_string(), |txid| format!(", txid = {}", txid))
                 );
                 old_statushash = statushash;
             }
@@ -193,10 +193,10 @@ impl SubscriptionsHandler {
         }
 
         debug!("notify_scripthash_subscriptions: scripthash = {}, old_statushash = {}, new_statushash = {}{}",
-               scripthash,
-               old_statushash,
-               new_statushash,
-               txid_opt.map_or("".to_string(), |txid| format!(", txid = {}", txid))
+           scripthash,
+           old_statushash,
+           new_statushash,
+           txid_opt.map_or("".to_string(), |txid| format!(", txid = {}", txid))
         );
 
         let msg_str = json!({
@@ -471,7 +471,7 @@ impl SubscriptionsManager {
                 let response = sqs.receive_message(receive_request.clone()).sync();
                 match response.expect("Expected to have a receive message response").messages {
                     Some(messages) => for msg in messages {
-                        let message_body: std::result::Result<SNSMessage, serde_json::Error> =  serde_json::from_str(msg.body.unwrap().as_str());
+                        let message_body: std::result::Result<SNSMessage, serde_json::Error> = serde_json::from_str(msg.body.unwrap().as_str());
 
                         if message_body.is_err() {
                             continue;
