@@ -90,7 +90,6 @@ impl Parser {
         let timer = self.duration.with_label_values(&["index"]).start_timer();
         for block in blocks {
             let blockhash = block.bitcoin_hash();
-            debug!("BlockHash {}", blockhash);
             if let Some(header) = self.current_headers.header_by_blockhash(&blockhash) {
                 if self
                     .indexed_blockhashes
@@ -151,6 +150,7 @@ fn parse_blocks(blob: Vec<u8>, magic: u32) -> Result<Vec<Block>> {
         }
         let block: Block = deserialize(&blob[start as usize..end as usize])
             .chain_err(|| format!("failed to parse block at {}..{}", start, end))?;
+        debug!("Parsed block {}", block.bitcoin_hash());
         blocks.push(block);
         cursor.set_position(end as u64);
     }
@@ -208,6 +208,7 @@ fn start_indexer(
         loop {
             let msg = blobs.lock().unwrap().recv();
             if let Ok((blob, path)) = msg {
+                debug!("Parsing {:?}", path);
                 let rows = parser
                     .index_blkfile(blob)
                     .chain_err(|| format!("failed to index {:?}", path))?;

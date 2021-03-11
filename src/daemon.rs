@@ -552,6 +552,7 @@ impl Daemon {
             self.request("getblock", json!([blockhash.to_hex(), /*verbose=*/ false]))?,
             self.network,
         )?;
+        trace!("latest block {}", block.bitcoin_hash());
         assert_eq!(block.bitcoin_hash(), *blockhash);
         Ok(block)
     }
@@ -580,7 +581,9 @@ impl Daemon {
         let values = self.requests("getblock", &params_list)?;
         let mut blocks = vec![];
         for value in values {
-            blocks.push(block_from_value(value, self.network)?);
+            let block = block_from_value(value, self.network)?;
+            trace!("get block {}", block.bitcoin_hash());
+            blocks.push(block);
         }
         Ok(blocks)
     }
