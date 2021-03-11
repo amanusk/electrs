@@ -90,6 +90,7 @@ impl Parser {
         let timer = self.duration.with_label_values(&["index"]).start_timer();
         for block in blocks {
             let blockhash = block.bitcoin_hash();
+            debug!("BlockHash {}", blockhash);
             if let Some(header) = self.current_headers.header_by_blockhash(&blockhash) {
                 if self
                     .indexed_blockhashes

@@ -54,41 +54,40 @@ fn header_from_value(value: Value, network: Network) -> Result<BlockHeader> {
     }
 }
 
-fn block_from_value(value: Value) -> Result<Block> {
+fn block_from_value(value: Value, network: Network) -> Result<Block> {
     let block_hex = value.as_str().chain_err(|| "non-string block")?;
     let block_bytes = hex::decode(block_hex).chain_err(|| "non-hex block")?;
-    Ok(deserialize(&block_bytes).chain_err(|| format!("failed to parse block {}", block_hex))?)
-}
 
-fn doge_block_from_value(value: Value) -> Result<Block> {
-    let block_hex = value.as_str().chain_err(|| "non-string block")?;
-    let block_bytes = hex::decode(block_hex).chain_err(|| "non-hex block")?;
     let mut cur = std::io::Cursor::new(&block_bytes);
     let block_header: bitcoin::BlockHeader =
         Decodable::consensus_decode(&mut cur).chain_err(|| "Unable to decode header")?;
 
-    if block_header.version & 1 << 8 != 0 {
-        let _: bitcoin::Transaction =
-            Decodable::consensus_decode(&mut cur).chain_err(|| "Unable to decode Tx")?;
-        let pos = cur.position() + 32;
-        cur.set_position(pos);
-        let len: bitcoin::VarInt =
-            Decodable::consensus_decode(&mut cur).chain_err(|| "Unalbe to decode length")?;
-        let pos = cur.position() + 32 * len.0;
-        cur.set_position(pos + 4);
+    match network {
+        Network::Dogecoin if block_header.version & 1 << 8 != 0 => {
+            let _: bitcoin::Transaction =
+                Decodable::consensus_decode(&mut cur).chain_err(|| "Unable to decode Tx")?;
+            let pos = cur.position() + 32;
+            cur.set_position(pos);
+            let len: bitcoin::VarInt =
+                Decodable::consensus_decode(&mut cur).chain_err(|| "Unalbe to decode length")?;
+            let pos = cur.position() + 32 * len.0;
+            cur.set_position(pos + 4);
 
-        let len: bitcoin::VarInt =
-            Decodable::consensus_decode(&mut cur).chain_err(|| "Unable to decode len")?;
-        let pos = cur.position() + 32 * len.0;
-        cur.set_position(pos + 4);
-        let _: bitcoin::BlockHeader =
-            Decodable::consensus_decode(&mut cur).chain_err(|| "Unalbe to decode AuxPow header")?;
+            let len: bitcoin::VarInt =
+                Decodable::consensus_decode(&mut cur).chain_err(|| "Unable to decode len")?;
+            let pos = cur.position() + 32 * len.0;
+            cur.set_position(pos + 4);
+            let _: bitcoin::BlockHeader = Decodable::consensus_decode(&mut cur)
+                .chain_err(|| "Unalbe to decode AuxPow header")?;
+            Ok(Block {
+                header: block_header,
+                txdata: Decodable::consensus_decode(&mut cur)
+                    .chain_err(|| "Unable to decode Txs")?,
+            })
+        }
+        _ => Ok(deserialize(&block_bytes)
+            .chain_err(|| format!("failed to parse block {}", block_hex))?),
     }
-
-    Ok(Block {
-        header: block_header,
-        txdata: Decodable::consensus_decode(&mut cur).chain_err(|| "Unable to decode Txs")?,
-    })
 }
 
 fn tx_from_value(value: Value) -> Result<Transaction> {
@@ -551,6 +550,7 @@ impl Daemon {
     pub fn getblock(&self, blockhash: &BlockHash) -> Result<Block> {
         let block = block_from_value(
             self.request("getblock", json!([blockhash.to_hex(), /*verbose=*/ false]))?,
+            self.network,
         )?;
         assert_eq!(block.bitcoin_hash(), *blockhash);
         Ok(block)
@@ -580,7 +580,7 @@ impl Daemon {
         let values = self.requests("getblock", &params_list)?;
         let mut blocks = vec![];
         for value in values {
-            blocks.push(block_from_value(value)?);
+            blocks.push(block_from_value(value, self.network)?);
         }
         Ok(blocks)
     }
@@ -724,7 +724,6 @@ impl Daemon {
 mod tests {
     use super::*;
     use bitcoin::network::constants::Network;
-    use hex::decode as hex_decode;
 
     #[test]
     fn deserialize_doge_header() {
@@ -738,7 +737,6 @@ mod tests {
 
     #[test]
     fn deserialize_auxpow_doge_header() {
-        // let some_header = "02006200c7200ba555cbde915159e8d3e341822fa2c9c027ed2bd8bd07324206c48fd58a77d834db30a5d77351164eb7deb15f9a1ba896b8f7c89c23798ed94fb43b50a039fb115475df2f1be8afc4ca";
         let some_header = "020162000d6f03470d329026cd1fc720c0609cd378ca8691a117bd1aa46f01fb09b1a8468a15bf6f0b0e83f2e5036684169eafb9406468d4f075c999fb5b2a78fbb827ee41fb11548441361b0000000001000000010000000000000000000000000000000000000000000000000000000000000000ffffffff380345bf09fabe6d6d980ba42120410de0554d42a5b5ee58167bcd86bf7591f429005f24da45fb51cf0800000000000000cdb1f1ff0e000000ffffffff01800c0c2a010000001976a914aa3750aa18b8a0f3f0590731e1fab934856680cf88ac00000000b3e64e02fff596209c498f1b18f798d62f216f11c8462bf3922319000000000003a979a636db2450363972d211aee67b71387a3daaa3051be0fd260c5acd4739cd52a418d29d8a0e56c8714c95a0dc24e1c9624480ec497fe2441941f3fee8f9481a3370c334178415c83d1d0c2deeec727c2330617a47691fc5e79203669312d100000000036fa40307b3a439538195245b0de56a2c1db6ba3a64f8bdd2071d00bc48c841b5e77b98e5c7d6f06f92dec5cf6d61277ecb9a0342406f49f34c51ee8ce4abd678038129485de14238bd1ca12cd2de12ff0e383aee542d90437cd664ce139446a00000000002000000d2ec7dfeb7e8f43fe77aba3368df95ac2088034420402730ee0492a2084217083411b3fc91033bfdeea339bc11b9efc986e161c703e07a9045338c165673f09940fb11548b54021b58cc9ae5";
 
         let header: BlockHeader = header_from_value(json!(some_header), Network::Dogecoin)
@@ -750,8 +748,8 @@ mod tests {
     fn deserialize_doge_block_100() {
         let some_block = "0100000030dd3598b1a9dda6a8575c0a703403efbef3b7e074880a798fc48f8646f8ad0a6c1c5d9b68fb67954f3c7f8b0863d63d5b95eebf3c8166783c6d1a6f66670c9293efa352f0ff0f1e00028ed70101000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0e0493efa3520101062f503253482fffffffff01001333d1325100002321024274baa26a5da9cf9ddc784d6a5cb439cfa840c0eb77c60f2448ff88beb5a734ac00000000";
 
-        let block: Block =
-            block_from_value(json!(some_block)).expect("Can't deserialize correct block");
+        let block: Block = block_from_value(json!(some_block), Network::Dogecoin)
+            .expect("Can't deserialize correct block");
 
         println!("{:?}", block);
     }
