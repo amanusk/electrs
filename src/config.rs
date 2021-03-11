@@ -231,7 +231,7 @@ impl Config {
             Network::Bitcoin => (),
             Network::Testnet => config.daemon_dir.push("testnet3"),
             Network::Regtest => config.daemon_dir.push("regtest"),
-            Network::Dogecoin => config.daemon_dir.push("dogecoin"),
+            Network::Dogecoin => (),
         }
 
         let cookie_getter =
