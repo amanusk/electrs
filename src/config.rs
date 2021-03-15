@@ -191,6 +191,7 @@ impl Config {
             Network::Testnet => "testnet",
             Network::Regtest => "regtest",
             Network::Dogecoin => "dogecoin",
+            Network::Dogetest => "dogetest",
         };
 
         config.db_dir.push(db_subdir);
@@ -200,18 +201,21 @@ impl Config {
             Network::Testnet => 18332,
             Network::Regtest => 18443,
             Network::Dogecoin => 22555,
+            Network::Dogetest => 44555,
         };
         let default_electrum_port = match config.network {
             Network::Bitcoin => 50001,
             Network::Testnet => 60001,
             Network::Regtest => 60401,
             Network::Dogecoin => 60001,
+            Network::Dogetest => 60001,
         };
         let default_monitoring_port = match config.network {
             Network::Bitcoin => 4224,
             Network::Testnet => 14224,
             Network::Regtest => 24224,
             Network::Dogecoin => 34224,
+            Network::Dogetest => 44224,
         };
 
         let daemon_rpc_addr: SocketAddr = config.daemon_rpc_addr.map_or(
@@ -232,6 +236,7 @@ impl Config {
             Network::Testnet => config.daemon_dir.push("testnet3"),
             Network::Regtest => config.daemon_dir.push("regtest"),
             Network::Dogecoin => (),
+            Network::Dogetest => config.daemon_dir.push("testnet3"),
         }
 
         let cookie_getter =

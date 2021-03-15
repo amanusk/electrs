@@ -42,7 +42,7 @@ fn header_from_value(value: Value, network: Network) -> Result<BlockHeader> {
         .as_str()
         .chain_err(|| format!("non-string header: {}", value))?;
     let header_bytes = hex::decode(header_hex).chain_err(|| "non-hex header")?;
-    if network == Network::Dogecoin {
+    if network == Network::Dogecoin || network == Network::Dogetest {
         let header_bytes = hex::decode(header_hex).chain_err(|| "non-hex header")?;
         let mut cur = std::io::Cursor::new(&header_bytes);
         let block_header: bitcoin::BlockHeader =
@@ -63,7 +63,7 @@ fn block_from_value(value: Value, network: Network) -> Result<Block> {
         Decodable::consensus_decode(&mut cur).chain_err(|| "Unable to decode header")?;
 
     match network {
-        Network::Dogecoin if block_header.version & 1 << 8 != 0 => {
+        Network::Dogecoin | Network::Dogetest if block_header.version & 1 << 8 != 0 => {
             let _: bitcoin::Transaction =
                 Decodable::consensus_decode(&mut cur).chain_err(|| "Unable to decode Tx")?;
             let pos = cur.position() + 32;
@@ -513,7 +513,12 @@ impl Daemon {
     }
 
     pub fn estimatesmartfee(&self, conf_target: usize, estimate_mode: &str) -> Result<f64> {
-        let val: Value = self.request("estimatesmartfee", json!([conf_target, estimate_mode]))?;
+        let val: Value;
+        if self.network == Network::Dogecoin || self.network == Network::Dogetest {
+            val = self.request("estimatesmartfee", json!([conf_target]))?;
+        } else {
+            val = self.request("estimatesmartfee", json!([conf_target, estimate_mode]))?;
+        }
         let fee_estimate: Result<FeeEstimate> =
             Ok(from_value(val).chain_err(|| "invalid fee estimate")?);
         Ok(fee_estimate?.feerate)
@@ -558,14 +563,25 @@ impl Daemon {
     }
 
     fn load_blocktxids(&self, blockhash: &BlockHash) -> Result<Vec<Txid>> {
-        self.request("getblock", json!([blockhash.to_hex(), /*verbose=*/ 1]))?
-            .get("tx")
-            .chain_err(|| "block missing txids")?
-            .as_array()
-            .chain_err(|| "invalid block txids")?
-            .iter()
-            .map(parse_hash)
-            .collect::<Result<Vec<Txid>>>()
+        if self.network == Network::Dogecoin || self.network == Network::Dogetest {
+            self.request("getblock", json!([blockhash.to_hex(), /*verbose=*/ true]))?
+                .get("tx")
+                .chain_err(|| "block missing txids")?
+                .as_array()
+                .chain_err(|| "invalid block txids")?
+                .iter()
+                .map(parse_hash)
+                .collect::<Result<Vec<Txid>>>()
+        } else {
+            self.request("getblock", json!([blockhash.to_hex(), /*verbose=*/ 1]))?
+                .get("tx")
+                .chain_err(|| "block missing txids")?
+                .as_array()
+                .chain_err(|| "invalid block txids")?
+                .iter()
+                .map(parse_hash)
+                .collect::<Result<Vec<Txid>>>()
+        }
     }
 
     pub fn getblocktxids(&self, blockhash: &BlockHash) -> Result<Vec<Txid>> {
@@ -594,9 +610,13 @@ impl Daemon {
         blockhash: Option<BlockHash>,
     ) -> Result<Transaction> {
         let mut args = json!([txhash.to_hex(), /*verbose=*/ false]);
-        if let Some(blockhash) = blockhash {
-            args.as_array_mut().unwrap().push(json!(blockhash.to_hex()));
+        // Dogecoin currently does not support getting Txs with blockhash
+        if self.network != Network::Dogecoin && self.network != Network::Dogetest {
+            if let Some(blockhash) = blockhash {
+                args.as_array_mut().unwrap().push(json!(blockhash.to_hex()));
+            }
         }
+        debug!("Getting info for {:?}", args);
         tx_from_value(self.request("getrawtransaction", args)?)
     }
 
@@ -607,9 +627,13 @@ impl Daemon {
         verbose: bool,
     ) -> Result<Value> {
         let mut args = json!([txhash.to_hex(), verbose]);
-        if let Some(blockhash) = blockhash {
-            args.as_array_mut().unwrap().push(json!(blockhash.to_hex()));
+        // Dogecoin currently does not support getting Txs with blockhash
+        if self.network != Network::Dogecoin && self.network != Network::Dogetest {
+            if let Some(blockhash) = blockhash {
+                args.as_array_mut().unwrap().push(json!(blockhash.to_hex()));
+            }
         }
+        debug!("Getting raw info for {:?}", args);
         Ok(self.request("getrawtransaction", args)?)
     }
 
